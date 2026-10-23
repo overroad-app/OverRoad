@@ -1,0 +1,11 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# 공모전 접수양식: 개인정보(성명·연락처·서명)를 적게 되므로 저장소에 올리지 않는다
+*접수양식*.docx
+__pycache__/
+*.pyc

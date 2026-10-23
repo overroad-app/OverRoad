@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HyperConnect 도로 상황</title>
+<style>
+  :root { --bg:#101216; --panel:#1b1e25; --ink:#e9ecf1; --quiet:#97a0ad; --lane:#2b303a; --mark:#5b6372;
+          --car:#3d7be0; --alert:#e5484d; --src:#f0a020; --wx:#3a9ad9; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 -apple-system, "Apple SD Gothic Neo", sans-serif; }
+  header { padding:16px 24px 8px; display:flex; align-items:baseline; gap:16px; }
+  h1 { font-size:22px; margin:0; }
+  header span { color:var(--quiet); }
+  #road { display:block; width:calc(100% - 48px); margin:8px 24px; height:300px; background:var(--panel); border-radius:12px; }
+  .row { display:grid; grid-template-columns: 1fr 1fr; gap:16px; padding:0 24px 24px; }
+  .card { background:var(--panel); border-radius:12px; padding:14px 16px; }
+  .card h2 { font-size:15px; margin:0 0 8px; color:var(--quiet); font-weight:600; }
+  table { width:100%; border-collapse:collapse; }
+  td, th { text-align:left; padding:4px 6px; border-bottom:1px solid var(--lane); font-variant-numeric:tabular-nums; }
+  th { color:var(--quiet); font-weight:500; }
+  .warn { color:var(--alert); font-weight:600; }
+  #log div { padding:3px 0; border-bottom:1px solid var(--lane); }
+</style>
+</head>
+<body>
+<header><h1>HyperConnect · 실시간 도로 상황</h1><span>차량 레지스트리(LDM) 기반 · 진행 방향 →</span></header>
+<canvas id="road"></canvas>
+<div class="row">
+  <div class="card"><h2>차량 레지스트리</h2>
+    <table><thead><tr><th>ID</th><th>차로</th><th>속도</th><th>위치(전방 m)</th><th>상태</th></tr></thead><tbody id="reg"></tbody></table>
+  </div>
+  <div class="card"><h2>경고 전파 기록</h2><div id="log"></div></div>
+  <div class="card"><h2>충전소 (현재 · 향하는 EV)</h2>
+    <table><thead><tr><th>충전소</th><th>충전기</th><th>충전 중</th><th>대기</th><th>향하는 EV</th></tr></thead><tbody id="chg"></tbody></table>
+  </div>
+</div>
+<script>
+const EMOTE = { thanks:"👍", sorry:"🙏", hello:"👋" };
+const LABEL = { hard_brake:"급제동", stopped_vehicle:"정차 차량", crash:"사고", heavy_rain:"폭우", fog:"안개", slippery:"미끄러운 노면", congestion:"구간" };
+const ROLE = { ambulance:"🚑", fire:"🚒", police:"🚓" };
+const describe = a => a.type === "congestion" ? a.label : LABEL[a.type];
+const LANE_LABEL = { same:"같은 차로", adjacent:"옆 차로", other:"다른 차로", unknown:"차로 미상" };
+const canvas = document.getElementById("road"), ctx = canvas.getContext("2d");
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function along(lat, lat0) { return (lat - lat0) * 111320; }  // 진행 방향(북쪽) 기준 거리
+
+function draw(s) {
+  const dpr = window.devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const vs = Object.entries(s.vehicles);
+  const lanes = Math.max(3, ...vs.map(([, v]) => v.lane || 0));
+  const lat0 = Math.min(...vs.map(([, v]) => v.lat), ...s.events.map(e => e.lat), 999);
+  const xs = [...vs.map(([, v]) => along(v.lat, lat0)), ...s.events.map(e => along(e.lat, lat0))];
+  const lo = Math.min(0, ...xs) - 60, hi = Math.max(lo + 600, ...xs) + 60;
+  const X = m => 40 + (m - lo) / (hi - lo) * (W - 80);
+  const top = 50, laneH = (H - 90) / lanes, Y = lane => top + (lane - 0.5) * laneH;
+
+  // 기상 위험 구간
+  for (const e of s.events.filter(e => ["heavy_rain", "fog", "slippery"].includes(e.type))) {
+    const c = along(e.lat, lat0);
+    ctx.fillStyle = "rgba(58,154,217,0.18)";
+    ctx.fillRect(X(c - 500), top, X(c + 500) - X(c - 500), lanes * laneH);
+    ctx.fillStyle = css("--wx"); ctx.font = "600 14px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(`${LABEL[e.type]} 구간`, X(c), top - 10);
+  }
+  // 정체·사고 구간: 꼬리부터 머리까지 띠 (사고는 빨강)
+  for (const z of (s.zones || [])) {
+    const x1 = X(along(z.tail_lat, lat0)) - 20, x2 = X(along(z.head_lat, lat0)) + 20;
+    ctx.fillStyle = z.kind === "jam" ? "rgba(240,160,32,0.16)" : "rgba(229,72,77,0.18)";
+    ctx.fillRect(x1, top, x2 - x1, lanes * laneH);
+    ctx.fillStyle = z.kind === "jam" ? css("--src") : css("--alert"); ctx.font = "600 14px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(`${z.label} · ${z.members.length}대 · 평균 ${z.avg_kph}km/h`, (x1 + x2) / 2, top + lanes * laneH + 22);
+  }
+  // 차로
+  ctx.strokeStyle = css("--mark"); ctx.setLineDash([14, 12]); ctx.lineWidth = 2;
+  for (let i = 1; i < lanes; i++) { ctx.beginPath(); ctx.moveTo(20, top + i * laneH); ctx.lineTo(W - 20, top + i * laneH); ctx.stroke(); }
+  ctx.setLineDash([]); ctx.strokeStyle = css("--quiet");
+  for (const y of [top, top + lanes * laneH]) { ctx.beginPath(); ctx.moveTo(20, y); ctx.lineTo(W - 20, y); ctx.stroke(); }
+  ctx.fillStyle = css("--quiet"); ctx.font = "12px sans-serif"; ctx.textAlign = "left";
+  for (let i = 1; i <= lanes; i++) ctx.fillText(`${i}차로`, 24, Y(i) - laneH / 2 + 14);
+  // 즉시성 이벤트 지점
+  for (const e of s.events.filter(e => s.now - e.ts < 15 && !["heavy_rain", "fog", "slippery"].includes(e.type))) {
+    const x = X(along(e.lat, lat0)), y = Y(e.lane || 1);
+    ctx.fillStyle = e.type === "hard_brake" ? css("--src") : css("--alert");
+    ctx.beginPath(); ctx.arc(x, y, 26, 0, 2 * Math.PI); ctx.globalAlpha = 0.25; ctx.fill(); ctx.globalAlpha = 1;
+  }
+  // 이모트: 보낸 차에서 받은 차로 점선 화살표, 받은 차 위에 이모지
+  for (const e of s.emotes.filter(e => s.now - e.ts < 4)) {
+    const a = s.vehicles[e.from], b = s.vehicles[e.to];
+    if (!a || !b) continue;
+    const ax = X(along(a.lat, lat0)), ay = Y(a.lane || 1), bx = X(along(b.lat, lat0)), by = Y(b.lane || 1);
+    ctx.strokeStyle = "#2fb36b"; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+    ctx.beginPath(); ctx.moveTo(ax, ay - 16); ctx.quadraticCurveTo((ax + bx) / 2, Math.min(ay, by) - 60, bx, by - 16); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = "34px sans-serif"; ctx.textAlign = "center"; ctx.fillText(EMOTE[e.emote], bx, by - 40);
+  }
+  // 차량
+  const warned = new Map(s.alerts.filter(a => s.now - a.ts < 8).map(a => [a.to, a]));
+  const source = new Set(s.events.filter(e => s.now - e.ts < 8).map(e => e.vehicle));
+  for (const [id, v] of vs) {
+    const x = X(along(v.lat, lat0)), y = Y(v.lane || 1);
+    const color = warned.has(id) ? css("--alert") : source.has(id) ? css("--src") : css("--car");
+    ctx.fillStyle = v.role ? "#1e50c8" : color; ctx.beginPath(); ctx.roundRect(x - 22, y - 13, 44, 26, 6); ctx.fill();
+    if (v.role) { ctx.font = "22px sans-serif"; ctx.textAlign = "center"; ctx.fillText(ROLE[v.role], x - 34, y + 8); }
+    ctx.fillStyle = "#fff"; ctx.font = "700 15px sans-serif"; ctx.textAlign = "center"; ctx.fillText(id, x, y + 5);
+    ctx.fillStyle = css("--ink"); ctx.font = "12px sans-serif";
+    ctx.fillText(`${Math.round(v.speed_kph || 0)}km/h`, x, y + 30);
+    const skip = s.events.filter(e => s.now - e.ts < 8 && e.decisions && e.decisions[id] && e.decisions[id] !== "경고").pop();
+    if (skip && !warned.has(id)) {
+      ctx.fillStyle = css("--quiet"); ctx.font = "13px sans-serif";
+      ctx.fillText(`제외 · ${skip.decisions[id]}`, x, y - 20);
+    }
+    if (warned.has(id)) {
+      const a = warned.get(id);
+      ctx.fillStyle = css("--alert"); ctx.font = "600 13px sans-serif";
+      ctx.fillText(`⚠ ${describe(a)} ${a.distance_m}m 앞`, x, y - 20);
+    }
+  }
+}
+
+function table(s) {
+  const lat0 = Math.min(...Object.values(s.vehicles).map(v => v.lat), 999);
+  const warned = new Set(s.alerts.filter(a => s.now - a.ts < 8).map(a => a.to));
+  document.getElementById("reg").innerHTML = Object.entries(s.vehicles).sort().map(([id, v]) =>
+    `<tr><td>${id}</td><td>${v.lane ?? "-"}</td><td>${Math.round(v.speed_kph || 0)} km/h</td>` +
+    `<td>${Math.round(along(v.lat, lat0))}</td><td class="${warned.has(id) ? "warn" : ""}">${warned.has(id) ? "경고 수신" : "정상"}</td></tr>`).join("");
+  document.getElementById("log").innerHTML = s.alerts.slice().reverse().slice(0, 10).map(a =>
+    `<div>${new Date(a.ts * 1000).toLocaleTimeString()} · <b>${a.to}</b> ← ${describe(a)} ${a.distance_m}m 앞 (${LANE_LABEL[a.lane]})</div>`).join("")
+    || `<div style="color:var(--quiet)">아직 전파된 경고가 없습니다</div>`;
+  document.getElementById("chg").innerHTML = (s.chargers || []).map(c =>
+    `<tr><td>${c.name}</td><td>${c.stalls}</td><td>${c.charging}</td><td>${c.waiting}</td><td>${c.coming}</td></tr>`).join("");
+}
+
+async function tick() {
+  try { const s = await (await fetch("/status", { cache: "no-store" })).json(); draw(s); table(s); } catch (e) {}
+  setTimeout(tick, 400);
+}
+tick();
+</script>
+</body>
+</html>
