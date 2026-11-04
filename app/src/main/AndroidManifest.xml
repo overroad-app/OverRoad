@@ -23,6 +23,12 @@
     <uses-permission android:name="android.car.permission.CAR_SPEED" />
     <!-- HyperConnect 서버 통신 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Pleos TTS SDK (기기 내 음성 합성) -->
+    <uses-permission android:name="pleos.car.permission.TTS_SERVICE" />
+
+    <!-- 화면 뒤에서도 경고 수신을 유지하는 포그라운드 서비스 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:label="@string/app_name"
@@ -34,8 +40,19 @@
             android:name="com.hmg.rotary.ROTARY_SUPPORTED"
             android:value="false" />
 
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="차량 간 도로 위험 경고를 내비게이션이 앞에 있을 때도 실시간으로 받기 위함" />
+        </service>
+
+        <!-- Pleos 멀티 윈도우에서 창 크기·방향이 바뀌어도 화면을 다시 만들지 않는다 (연결·상태 유지) -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode|keyboard|keyboardHidden|navigation"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

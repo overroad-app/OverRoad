@@ -24,6 +24,11 @@ class Prefs(context: Context) {
         get() = p.getBoolean("emote_buttons", true)
         set(v) = p.edit().putBoolean("emote_buttons", v).apply()
 
+    /** 위치·차량 신호를 서버와 공유하는 데 동의했는지. 동의 전에는 아무것도 보내지 않는다. */
+    var consented: Boolean
+        get() = p.getBoolean("consented", false)
+        set(v) = p.edit().putBoolean("consented", v).apply()
+
     /** 자동 감사 인사: 차로 진입에 성공하면 조작 없이 양보해 준 뒤차에게 👍를 보낸다. */
     var autoThanks: Boolean
         get() = p.getBoolean("auto_thanks", true)
@@ -34,13 +39,15 @@ class Prefs(context: Context) {
  * 설정 화면: 내 기여 통계·배지와 이모트 관련 설정. 정차 중에만 연다.
  * 공개 순위표 대신 내 위치(상위 %)와 배지만 보여준다.
  */
-class SettingsPanel(context: Context, private val prefs: Prefs, onClose: () -> Unit) {
+class SettingsPanel(context: Context, private val prefs: Prefs, onClose: () -> Unit, onWithdraw: () -> Unit) {
 
     private val statsView = text(context, 30f, Color.WHITE)
 
     val view: View = ScrollView(context).apply {
         setBackgroundColor(Color.rgb(18, 20, 26))
         visibility = View.GONE
+        elevation = 100f
+        isClickable = true
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(72, 48, 72, 48)
@@ -52,6 +59,12 @@ class SettingsPanel(context: Context, private val prefs: Prefs, onClose: () -> U
             addView(toggle(context, "이모트 받기", prefs.receiveEmotes) { prefs.receiveEmotes = it })
             addView(toggle(context, "이모트 보내기 버튼 (정차·저속일 때만 표시)", prefs.emoteButtons) { prefs.emoteButtons = it })
             addView(toggle(context, "자동 감사 인사 (차로 진입 후 뒤차에게 👍)", prefs.autoThanks) { prefs.autoThanks = it })
+            addView(Button(context).apply {
+                text = "데이터 공유 동의 철회"
+                isAllCaps = false
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
+                setOnClickListener { onWithdraw() }
+            })
             addView(Button(context).apply {
                 text = "닫기"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)

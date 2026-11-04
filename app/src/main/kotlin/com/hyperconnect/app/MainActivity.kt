@@ -1,7 +1,14 @@
 package com.hyperconnect.app
 
+import ai.pleos.playground.tts.TextToSpeech as PleosTts
+import ai.pleos.playground.tts.constant.ErrorType
+import ai.pleos.playground.tts.constant.Mode
+import ai.pleos.playground.tts.listener.EventListener as PleosTtsListener
+import ai.pleos.playground.tts.listener.OnInitializeListener
 import ai.pleos.playground.vehicle.Vehicle
 import ai.pleos.playground.vehicle.api.model.area.WindowArea
+import ai.pleos.playground.vehicle.api.model.capability.AccessType
+import ai.pleos.playground.vehicle.api.model.capability.CapabilityConfig
 import ai.pleos.playground.vehicle.api.model.telltale.Telltales
 import ai.pleos.playground.vehicle.constant.area.WindowValue
 import ai.pleos.playground.vehicle.constant.control.LightState
@@ -77,6 +84,8 @@ class MainActivity : Activity() {
     private lateinit var prefs: Prefs
     private lateinit var settings: SettingsPanel
     private lateinit var gearButton: Button
+    private lateinit var consent: ConsentView
+    private var serverUrl = DEFAULT_SERVER
     private lateinit var offlineView: TextView    // 서버 연결이 끊기면 경고를 받을 수 없다는 안내
 
     // 플랫폼 주행 규제 (CarUxRestrictions). 설정 화면은 NO_SETUP이 걸리면(정차·주행 중) 열 수 없다
@@ -101,6 +110,20 @@ class MainActivity : Activity() {
     private var naviTracker: NaviTracker? = null
     private lateinit var position: PositionEstimator
     private var ttsReady = false
+    // Pleos TTS(기기 내 모드, 앱 등록 불필요)를 먼저 쓰고, 안 되면 안드로이드 TTS로 대신한다
+    private var pleosTts: PleosTts? = null
+    @Volatile private var pleosTtsReady = false
+    private val pleosTtsListener = object : PleosTtsListener {
+        override fun onStart() {}
+        override fun onReady() {}
+        override fun onUpdatedRms(rms: Double) {}
+        override fun onDone() { handler.post(releaseFocus) }
+        override fun onStop() { handler.post(releaseFocus) }
+        override fun onError(type: ErrorType) {
+            Log.w(TAG, "Pleos TTS 오류: $type")
+            handler.post(releaseFocus)
+        }
+    }
     private val tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100)
     // 모든 효과음·음성은 재생 전에 오디오 포커스를 잠깐(MAY_DUCK) 받아 음악·내비 소리를 낮추고, 끝나면 돌려준다
     private val alertAttributes = AudioAttributes.Builder()
@@ -241,11 +264,11 @@ class MainActivity : Activity() {
         override fun run() {
             val now = SystemClock.elapsedRealtime()
             accident.tick(now)
-            vehicle.getEvBattery().getEvChargeSwitchState({ on ->
+            if (chargeSwitchSupported != false) vehicle.getEvBattery().getEvChargeSwitchState({ on ->
                 if ((on == true) != charging) update("배터리", "${soc ?: "-"}%${if (on == true) " · 충전 중" else ""}")
                 charging = on == true
             }, { Log.w(TAG, "충전 상태 조회 실패", it) })
-            vehicle.getWiper().getCurrentWiperSwitch(frontWindshield, { sw ->
+            if (wiperSupported != false) vehicle.getWiper().getCurrentWiperSwitch(frontWindshield, { sw ->
                 if (sw != weather.wiper) update("와이퍼", sw?.name ?: "-")
                 weather.wiper = sw
                 weather.evaluate(SystemClock.elapsedRealtime())
@@ -265,9 +288,11 @@ class MainActivity : Activity() {
             startOffsetM = intent.getDoubleExtra("offset_m", 0.0),
             rightOffsetM = ((lane ?: BASE_LANE) - BASE_LANE) * LANE_WIDTH_M,
         )
-        val server = intent.getStringExtra("server") ?: DEFAULT_SERVER
+        serverUrl = intent.getStringExtra("server") ?: DEFAULT_SERVER
 
         prefs = Prefs(this)
+        // 시연 자동화용: 실행 인자로 동의 상태를 미리 정한다 (실사용에서는 동의 화면에서만 바뀐다)
+        if (intent.hasExtra("consent")) prefs.consented = intent.getBooleanExtra("consent", false)
         buildUi()
         registerLaneReceiver()
         emoteSounds["thanks"] = sounds.load(this, R.raw.emote_thanks, 1)
@@ -300,6 +325,8 @@ class MainActivity : Activity() {
             })
         }
 
+        startPleosTts()
+
         naviTracker = NaviTracker(
             this,
             onPosition = { position.onNaviPosition(it) },
@@ -319,8 +346,15 @@ class MainActivity : Activity() {
             }
         }
 
+        if (prefs.consented) startSharing() else consent.show()
+    }
+
+    /** 동의한 뒤에만 서버 연결을 시작한다. */
+    private fun startSharing() {
+        if (client != null) return
+        consent.hide()
         client = HyperConnectClient(
-            baseUrl = server, vehicleId = vehicleId,
+            baseUrl = serverUrl, vehicleId = vehicleId,
             position = { position.current()?.let { (lat, lon, heading) -> Fix(lat, lon, heading, speedKph, lane, turnSignal, soc, charging, destination, role,
                 autoThanks = prefs.autoThanks)
             } },
@@ -335,6 +369,22 @@ class MainActivity : Activity() {
             onLane = ::showLane,
             onMergeDone = ::onMergeDone,
         ).also { it.start() }
+        KeepAliveService.start(this)
+        Log.i(TAG, "데이터 공유 시작 (동의함)")
+    }
+
+    /** 동의 철회: 전송을 멈추고 서버에 내 데이터 삭제를 요청한다. */
+    private fun withdrawConsent() {
+        val c = client ?: return
+        client = null
+        prefs.consented = false
+        c.stop()
+        c.forget { ok -> Log.i(TAG, "동의 철회: 서버 데이터 삭제 ${if (ok) "완료" else "실패"}") }
+        KeepAliveService.stop(this)
+        update("서버", "공유 중단 (동의 철회)")
+        settings.view.visibility = View.GONE
+        offlineView.visibility = View.GONE
+        consent.show()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
@@ -374,6 +424,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(ticker)
+        KeepAliveService.stop(this)
         releaseFocus.run()
         uxManager?.unregisterListener()
         unregisterReceiver(laneReceiver)
@@ -382,6 +433,8 @@ class MainActivity : Activity() {
         propertyManager?.unregisterCallback(speedCallback)
         car?.disconnect()
         tts?.shutdown()
+        pleosTts?.removeEventListener(pleosTtsListener)
+        pleosTts?.release()
         tone.release()
         sounds.release()
         vehicle.getGear().unregisterGearSelection(gearListener)
@@ -394,6 +447,27 @@ class MainActivity : Activity() {
         vehicle.getEvBattery().unregisterEvBatteryStateOfCharge(socListener)
         vehicle.release()
         super.onDestroy()
+    }
+
+    private fun startPleosTts() {
+        try {
+            val t = PleosTts(this, Mode.ON_DEVICE)
+            pleosTts = t
+            t.initialize(object : OnInitializeListener {
+                override fun onSuccess() {
+                    t.addEventListener(pleosTtsListener)
+                    t.setLocale(Locale.KOREA)
+                    t.setAudioAttributes(alertAttributes)
+                    pleosTtsReady = true
+                    Log.i(TAG, "Pleos TTS 사용 가능 (기기 내 모드)")
+                }
+                override fun onFailure(type: ErrorType) {
+                    Log.i(TAG, "Pleos TTS 사용 불가($type), 안드로이드 TTS로 대신함")
+                }
+            })
+        } catch (e: Throwable) {
+            Log.i(TAG, "Pleos TTS 초기화 실패, 안드로이드 TTS로 대신함", e)
+        }
     }
 
     private fun startSpeed() {
@@ -411,24 +485,60 @@ class MainActivity : Activity() {
         vehicle.getSafety().getTelltalesInfo(::onTelltales) { fail("경고등", it) }
     }
 
+    /** 1초마다 조회하는 값: 지원 여부 확인 전에는 시도하고(null), 미지원이면 조회하지 않는다. */
+    @Volatile private var wiperSupported: Boolean? = null
+    @Volatile private var chargeSwitchSupported: Boolean? = null
+
+    private fun CapabilityConfig.readable() = accessType == AccessType.READ || accessType == AccessType.READ_WRITE
+
+    /**
+     * 차종마다 지원하는 신호가 다르므로(Pleos 문서: checkXxxCapabilities로 먼저 확인) 지원하는 것만 구독한다.
+     * 확인 자체가 실패하면 일단 구독을 시도하고, 퍼미션이 없는 도메인이 있어도 나머지 신호는 계속 받는다.
+     */
     private fun registerListeners() {
-        // 퍼미션이 없는 도메인이 있어도 나머지 신호는 계속 받도록 하나씩 등록한다
-        listOf(
-            "기어" to { vehicle.getGear().registerGearSelection(gearListener) },
-            "브레이크" to { vehicle.getBrake().registerBrakePedalStatus(brakeListener) },
-            "안개등" to { vehicle.getLight().registerFrontFogLightState(fogListener) },
-            "전조등" to { vehicle.getLight().registerLowBeamLightState(lowBeamListener) },
-            "디포그" to { vehicle.getHVAC().registerHvacDefrosterState(frontWindshield, defrostListener) },
-            "경고등" to { vehicle.getSafety().registerTelltales(telltaleListener) },
-            "방향지시등" to { vehicle.getTurnSignal().registerTurnSignalState(turnSignalListener) },
-            "배터리" to { vehicle.getEvBattery().registerEvBatteryStateOfCharge(socListener) },
-        ).forEach { (name, register) ->
-            try {
+        fun subscribe(name: String, check: ((onResult: (Boolean) -> Unit) -> Unit)?, register: () -> Unit) {
+            fun doRegister() = try {
                 register()
             } catch (e: SecurityException) {
                 fail(name, e)
             }
+            if (check == null) return doRegister()
+            check { supported ->
+                if (supported) doRegister()
+                else if (name == "안개등") fogUnsupported(IllegalStateException("capability NONE"))
+                else update(name, "미지원 차량")
+            }
         }
+        // 확인이 실패하면(구버전 서비스 등) 지원한다고 보고 시도한다
+        fun onCheckFailed(name: String): (Exception) -> Unit = { Log.w(TAG, "$name 지원 여부 확인 실패, 구독 시도", it) }
+        subscribe("기어", null) { vehicle.getGear().registerGearSelection(gearListener) }
+        subscribe("브레이크", { ok -> vehicle.getBrake().checkBrakePedalStatusCapabilities({ ok(it.readable()) }, { onCheckFailed("브레이크")(it); ok(true) }) }) {
+            vehicle.getBrake().registerBrakePedalStatus(brakeListener)
+        }
+        subscribe("안개등", { ok -> vehicle.getLight().checkFrontFogLightStateCapabilities({ c, _ -> ok(c.readable()) }, { onCheckFailed("안개등")(it); ok(true) }) }) {
+            vehicle.getLight().registerFrontFogLightState(fogListener)
+        }
+        subscribe("전조등", { ok -> vehicle.getLight().checkLowBeamLightStateCapabilities({ c, _ -> ok(c.readable()) }, { onCheckFailed("전조등")(it); ok(true) }) }) {
+            vehicle.getLight().registerLowBeamLightState(lowBeamListener)
+        }
+        subscribe("디포그", { ok -> vehicle.getHVAC().checkHvacDefrosterCapabilities({ c, areas -> ok(c.readable() && areas.isNotEmpty()) }, { onCheckFailed("디포그")(it); ok(true) }) }) {
+            vehicle.getHVAC().registerHvacDefrosterState(frontWindshield, defrostListener)
+        }
+        subscribe("경고등", { ok -> vehicle.getSafety().checkTelltalesCapabilities({ ok(it.readable()) }, { onCheckFailed("경고등")(it); ok(true) }) }) {
+            vehicle.getSafety().registerTelltales(telltaleListener)
+        }
+        subscribe("방향지시등", { ok -> vehicle.getTurnSignal().checkTurnSignalStateCapabilities({ ok(it.readable()) }, { onCheckFailed("방향지시등")(it); ok(true) }) }) {
+            vehicle.getTurnSignal().registerTurnSignalState(turnSignalListener)
+        }
+        subscribe("배터리", { ok -> vehicle.getEvBattery().checkEvBatteryStateOfChargeCapabilities({ ok(it.readable()) }, { onCheckFailed("배터리")(it); ok(true) }) }) {
+            vehicle.getEvBattery().registerEvBatteryStateOfCharge(socListener)
+        }
+        vehicle.getWiper().checkWiperSwitchCapabilities({ c, areas ->
+            wiperSupported = c.readable() && areas.isNotEmpty()
+            if (wiperSupported == false) update("와이퍼", "미지원 차량")
+        }, onCheckFailed("와이퍼"))
+        vehicle.getEvBattery().checkEvChargeSwitchCapabilities({ chargeSwitchSupported = it.readable() }, onCheckFailed("충전 상태"))
+        Log.i(TAG, "차량 신호 지원 여부 확인 요청 완료")
     }
 
     // 안개등 상태를 지원하지 않는 차량(에뮬레이터 포함)은 안개등 경고등으로 판단한다
@@ -542,9 +652,12 @@ class MainActivity : Activity() {
             warningView.removeCallbacks(hideWarning)
             warningView.postDelayed(hideWarning, WARNING_SHOW_MS)
         }
-        withAudioFocus(if (ttsReady) WARNING_VOICE_MAX_MS else 800L) {
+        withAudioFocus(if (pleosTtsReady || ttsReady) WARNING_VOICE_MAX_MS else 800L) {
             tone.startTone(ToneGenerator.TONE_PROP_BEEP2, 600)
-            if (ttsReady) {
+            if (pleosTtsReady) {
+                // Pleos TTS는 묵음 데이터를 앞에 붙일 수 없어 재생 시작을 묵음 길이만큼 늦춘다
+                handler.postDelayed({ pleosTts?.speak(message, true) }, TTS_PREROLL_MS)
+            } else if (ttsReady) {
                 // 음성 안내 앞에 짧은 묵음을 넣어 첫 음절이 잘리지 않게 한다 (Pleos 음성 안내 선행 묵음 가이드)
                 tts?.playSilentUtterance(TTS_PREROLL_MS, TextToSpeech.QUEUE_FLUSH, null)
                 tts?.speak(message, TextToSpeech.QUEUE_ADD, null, UTTERANCE_WARNING)
@@ -578,6 +691,7 @@ class MainActivity : Activity() {
             Log.i(TAG, "오디오 포커스 상실($change): 소리 중단")
             tone.stopTone()
             tts?.stop()
+            pleosTts?.stop()
             sounds.autoPause()
             releaseFocus.run()
         }
@@ -836,7 +950,11 @@ class MainActivity : Activity() {
             addView(mergeThanksButton)
             addView(emoteBar)
         }
-        settings = SettingsPanel(this, prefs) { settings.view.visibility = View.GONE }
+        settings = SettingsPanel(this, prefs, onClose = { settings.view.visibility = View.GONE }, onWithdraw = ::withdrawConsent)
+        consent = ConsentView(this, onAgree = {
+            prefs.consented = true
+            startSharing()
+        }, onDecline = { update("서버", "공유 안 함 (동의하지 않음)") })
         // 화면 구석의 설정 버튼: 내 기여·베스트 드라이버, 이모트 설정
         gearButton = Button(this).apply {
             text = "⚙"
@@ -849,6 +967,8 @@ class MainActivity : Activity() {
             addView(gear, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { setMargins(0, 24, 24, 0) })
             addView(settings.view, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(consent.view, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT))
         })
         render()

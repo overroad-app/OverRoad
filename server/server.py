@@ -10,6 +10,7 @@
   POST /events                            이벤트 보고 (JSON)
   POST /emote                             앞차·뒤차에게 이모트 보내기 (JSON)
   POST /feedback                          받은 경고가 맞았는지 피드백 → 보고 차량의 신뢰 점수
+  POST /forget                            데이터 공유 동의 철회 → 이 차량의 위치·관측·통계 삭제
   GET  /stats?vehicle=B                   내 기여 통계·신뢰 점수·배지
   (서버가 1초마다 정체·사고 구간, EV 충전 대기 예측, 긴급차량 접근을 계산해 해당 차량에 보낸다)
   GET  /status                            차량 레지스트리·최근 이벤트·경고
@@ -350,6 +351,15 @@ def handle_feedback(body):
             stats[r]["correct" if body["correct"] else "incorrect"] += 1
         print(f"[feedback] {body['vehicle']} -> {sorted(reporters)}: {'맞음' if body['correct'] else '아님'}", flush=True)
         return {"ok": True}
+
+
+def forget(vid):
+    """데이터 공유 동의 철회: 이 차량의 위치·관측·통계를 지운다. (보고 이력은 익명 이벤트로만 남는다)"""
+    with lock:
+        removed = [name for name, table in (("위치", vehicles), ("기상 관측", weather_obs), ("통계", stats),
+                                            ("차로 변경", lane_intents)) if table.pop(vid, None) is not None]
+    print(f"[forget] {vid} 데이터 삭제: {', '.join(removed) or '없음'}", flush=True)
+    return {"ok": True, "removed": removed}
 
 
 def score(vid):
@@ -713,6 +723,7 @@ class Handler(BaseHTTPRequestHandler):
             "/events": ("vehicle", "type", "lat", "lon"),
             "/emote": ("vehicle", "emote", "target"),
             "/feedback": ("vehicle", "event_id", "correct"),
+            "/forget": ("vehicle",),
         }.get(path)
         if required is None:
             self._json(404, {"error": "not found"})
@@ -725,6 +736,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError(f"missing {key}")
         except (ValueError, json.JSONDecodeError) as e:
             self._json(400, {"error": str(e)})
+            return
+
+        if path == "/forget":
+            self._json(200, forget(body["vehicle"]))
             return
 
         if path == "/position":

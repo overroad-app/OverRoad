@@ -19,8 +19,8 @@ for d in emulator-5554 emulator-5556; do
   $ADB -s $d shell pm grant --user 10 com.hyperconnect.app android.car.permission.CAR_SPEED
   $ADB -s $d logcat -c
 done
-$ADB -s emulator-5554 shell am start -S -n com.hyperconnect.app/.MainActivity --es vehicle_id B --ei lane 2 --ed offset_m 0 >/dev/null
-$ADB -s emulator-5556 shell am start -S -n com.hyperconnect.app/.MainActivity --es vehicle_id C --ei lane 1 --ed offset_m -30 >/dev/null
+$ADB -s emulator-5554 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id B --ei lane 2 --ed offset_m 0 >/dev/null
+$ADB -s emulator-5556 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id C --ei lane 1 --ed offset_m -30 >/dev/null
 for i in $(seq 1 40); do
   curl -s localhost:8080/status | python3 -c "
 import sys,json

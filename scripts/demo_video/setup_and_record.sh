@@ -15,7 +15,7 @@ for s in emulator-5554:B:2:0 emulator-5556:C:2:-300; do
   IFS=: read d id lane off <<< "$s"
   $ADB -s $d install -r $APK >/dev/null
   $ADB -s $d shell pm grant --user 10 com.hyperconnect.app android.car.permission.CAR_SPEED
-  $ADB -s $d shell am start -S -n com.hyperconnect.app/.MainActivity --es vehicle_id $id --ei lane $lane --ed offset_m $off >/dev/null
+  $ADB -s $d shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id $id --ei lane $lane --ed offset_m $off >/dev/null
 done
 # B·C가 재시작 후 기준 위치(내비 기준점, B는 0m·C는 -300m)로 등록될 때까지 기다린다
 for i in $(seq 1 30); do

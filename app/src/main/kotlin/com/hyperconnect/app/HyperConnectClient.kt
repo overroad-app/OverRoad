@@ -120,6 +120,20 @@ class HyperConnectClient(
         }, "hc-feedback").start()
     }
 
+    /** 데이터 공유 동의 철회: 서버에 이 차량의 데이터를 지우도록 요청한다. */
+    fun forget(onDone: (Boolean) -> Unit) {
+        Thread({
+            val ok = try {
+                post("/forget", JSONObject().put("vehicle", vehicleId))
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "데이터 삭제 요청 실패", e)
+                false
+            }
+            onDone(ok)
+        }, "hc-forget").start()
+    }
+
     /** 내 기여 통계를 가져온다. */
     fun fetchStats(onResult: (MyStats?) -> Unit) {
         Thread({
