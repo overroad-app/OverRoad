@@ -21,11 +21,20 @@ data class MyStats(
     val accuracy: Int?, val topPct: Int?, val badges: List<String>,
 )
 
-/** 목적지 충전소의 도착 시점 대기 예측. [altName]이 있으면 대기가 더 짧은 대안 충전소다. */
+/**
+ * 목적지 충전소 예측 (rev2): 도착 순번([ahead]+1)·대기·충전 시작/완료 시각과 충전소 정보(실측 출력, 별점).
+ * 시각은 epoch 밀리초. [altName]이 있으면 충전이 더 빨리 끝나는 대안 충전소다.
+ */
 data class ChargingForecast(
-    val station: String, val ahead: Int, val waitMin: Int, val coming: Int,
-    val altName: String?, val altWaitMin: Int?,
+    val station: String, val stationId: String, val rating: Double?, val ratingN: Int,
+    val kw: Int, val kwMeasured: Boolean, val sessions: Int,
+    val ahead: Int, val waitMin: Int, val chargeMin: Int, val etaMs: Long, val startMs: Long, val doneMs: Long,
+    val stalls: Int, val chargingNetwork: Int, val chargingOther: Int, val expectedOther: Int, val coming: Int,
+    val altName: String?, val altWaitMin: Int?, val altDoneMs: Long?,
 )
+
+/** 내 충전이 끝남: 이 기록(시간·실측 출력)이 충전소 정보로 다른 운전자에게 쓰인다. 별점을 받을 수 있다. */
+data class ChargeDone(val station: String, val stationId: String, val minutes: Int, val kw: Int, val socFrom: Int, val socTo: Int)
 
 /** 뒤에서 접근하는 긴급차량. [passed]면 이미 지나갔다. */
 data class EmergencyApproach(val label: String, val symbol: String, val distanceM: Int, val sameLane: Boolean, val passed: Boolean)
@@ -55,6 +64,7 @@ class HyperConnectClient(
     private val onWarning: (RoadWarning) -> Unit,
     private val onEmote: (Emote) -> Unit,
     private val onCharging: (ChargingForecast) -> Unit,
+    private val onChargeDone: (ChargeDone) -> Unit,
     private val onEmergency: (EmergencyApproach) -> Unit,
     private val onLane: (LaneNotice) -> Unit,
     private val onMergeDone: (auto: Boolean) -> Unit,
@@ -107,6 +117,17 @@ class HyperConnectClient(
             }
             onResult(result)
         }, "hc-emote").start()
+    }
+
+    /** 충전소 별점 (1~5). 다른 운전자의 충전소 정보에 쓰인다. */
+    fun sendRating(stationId: String, stars: Int) {
+        Thread({
+            try {
+                post("/rating", JSONObject().put("vehicle", vehicleId).put("station", stationId).put("stars", stars))
+            } catch (e: Exception) {
+                Log.w(TAG, "별점 전송 실패", e)
+            }
+        }, "hc-rating").start()
     }
 
     /** 받은 경고가 맞았는지 알린다 (보고한 차량의 신뢰 점수에 반영). */
@@ -220,10 +241,23 @@ class HyperConnectClient(
                             "lane" -> onLane(LaneNotice(o.optString("role") == "merging", o.getInt("distance_m"), o.optString("side")))
                             "merge_done" -> onMergeDone(o.optBoolean("auto"))
                             "charging" -> onCharging(ChargingForecast(
-                                station = o.getString("station"), ahead = o.getInt("ahead"),
-                                waitMin = o.getInt("wait_min"), coming = o.getInt("coming"),
+                                station = o.getString("station"), stationId = o.getString("station_id"),
+                                rating = if (o.isNull("rating")) null else o.getDouble("rating"), ratingN = o.optInt("rating_n"),
+                                kw = o.getInt("kw"), kwMeasured = o.optBoolean("kw_measured"), sessions = o.optInt("sessions"),
+                                ahead = o.getInt("ahead"), waitMin = o.getInt("wait_min"), chargeMin = o.getInt("charge_min"),
+                                etaMs = (o.getDouble("eta_ts") * 1000).toLong(), startMs = (o.getDouble("start_ts") * 1000).toLong(),
+                                doneMs = (o.getDouble("done_ts") * 1000).toLong(),
+                                stalls = o.getInt("stalls"), chargingNetwork = o.getInt("charging_network"),
+                                chargingOther = o.getInt("charging_other"), expectedOther = o.optInt("expected_other"),
+                                coming = o.getInt("coming"),
                                 altName = o.optJSONObject("alt")?.optString("name"),
                                 altWaitMin = o.optJSONObject("alt")?.optInt("wait_min"),
+                                altDoneMs = o.optJSONObject("alt")?.let { (it.getDouble("done_ts") * 1000).toLong() },
+                            ))
+                            "charge_done" -> onChargeDone(ChargeDone(
+                                station = o.getString("station"), stationId = o.getString("station_id"),
+                                minutes = o.getInt("minutes"), kw = o.getInt("kw"),
+                                socFrom = o.getInt("soc_from"), socTo = o.getInt("soc_to"),
                             ))
                             "emergency" -> onEmergency(EmergencyApproach(
                                 label = o.getString("label"), symbol = o.getString("symbol"),

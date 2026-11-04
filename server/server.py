@@ -11,6 +11,9 @@
   POST /emote                             앞차·뒤차에게 이모트 보내기 (JSON)
   POST /feedback                          받은 경고가 맞았는지 피드백 → 보고 차량의 신뢰 점수
   POST /forget                            데이터 공유 동의 철회 → 이 차량의 위치·관측·통계 삭제
+  POST /rating                            충전 후 충전소 별점 (1~5)
+  POST /public_status                     공공 충전기 상태 입력 (환경공단 API 대체, 시연용)
+  POST /demo                              시연 설정 (charge_time_scale: 충전 시간 배속)
   GET  /stats?vehicle=B                   내 기여 통계·신뢰 점수·배지
   (서버가 1초마다 정체·사고 구간, EV 충전 대기 예측, 긴급차량 접근을 계산해 해당 차량에 보낸다)
   GET  /status                            차량 레지스트리·최근 이벤트·경고
@@ -57,15 +60,27 @@ JAM_MIN_VEHICLES = 3     # 구간으로 확정하는 최소 차량 수 (합의)
 STOPPED_KPH = 2          # 이보다 느리면 멈춘 차량
 ZONE_LABELS = {"accident": "사고 구간", "suspected": "사고·장애물 추정 구간", "jam": "정체 구간"}
 
-# EV 충전소: 시연용 고정 목록 (실제로는 공공 충전소 API와 연동)
+# EV 충전소 (rev2): 시연용 고정 목록. 실제로는 환경공단 충전소 정보 API의 위치·충전기 수·정격 출력을 쓴다
 CHARGERS = [
-    {"id": "PANGYO", "name": "판교역 충전소", "lat": 37.4020, "lon": 127.1080, "stalls": 2},
-    {"id": "SIHEUNG", "name": "시흥동 충전소", "lat": 37.4180, "lon": 127.1000, "stalls": 2},
+    {"id": "PANGYO", "name": "판교역 충전소", "lat": 37.4020, "lon": 127.1080, "stalls": 2, "kw": 100},
+    {"id": "SIHEUNG", "name": "시흥동 충전소", "lat": 37.4180, "lon": 127.1000, "stalls": 2, "kw": 100},
 ]
 CHARGER_RADIUS_M = 80    # 이 안에 있으면 충전소에 있는 차량
-BATTERY_KWH = 77.4       # 충전 시간 어림용 가정
-CHARGE_KW = 100
+BATTERY_KWH = 77.4       # 충전 시간 어림용 가정 (차종별 용량은 Tier 2: 차량 정보 연동)
 TARGET_SOC = 80
+KW_BEFORE_MEASURED = 0.8 # 실측 기록이 없을 때 정격 출력의 80%로 어림한다
+# 급속 1회 평균 이용 시간: 서울 공공 급속충전기 실이용 분석 47.2분 (한국ITS학회논문지, 2024). 실측이 쌓이면 대체된다
+AVG_SESSION_PRIOR_S = 47.2 * 60
+PRIOR_WEIGHT = 3         # 실측 기록 3건이 쌓이면 사전값과 같은 무게
+KM_PER_KWH = 5.5         # 도착 시 배터리 어림용 전비
+ROAD_FACTOR = 1.3        # 직선거리 → 도로 거리 어림
+PUBLIC_STALE_S = 600     # 공공 충전기 상태가 이보다 오래되면 쓰지 않는다
+public_status = {}       # 충전소 -> {"busy_since": [ts...], "arrivals_per_hour": float, "updated": ts}
+                         #   환경공단 충전기 상태(충전 중·충전 시작 시각)로 타사 차량까지 반영. 시연에서는 POST /public_status로 넣는다
+station_log = defaultdict(lambda: {"sessions": [], "ratings": {}})  # 충전소 -> HyperConnect 차량의 충전 기록·별점
+charge_track = {}        # 충전 중인 차량 -> {"station", "start", "soc0", "soc", "last"}
+just_finished = {}       # 방금 충전을 마친 차량 -> 충전소 (자리를 비키기 전까지 대기 차량으로 세지 않는다)
+demo = {"charge_time_scale": 1.0}  # 시연에서만: 충전 시간을 빠르게 흘려 실측 출력을 계산한다 (POST /demo)
 
 # 긴급차량 길 터주기
 EMERGENCY_ROLES = {"ambulance": ("구급차", "🚑"), "fire": ("소방차", "🚒"), "police": ("경찰차", "🚓")}
@@ -91,7 +106,7 @@ OTHER_LANE_PENALTY_M = 30 # 같은 거리면 같은 차로 차량을 우선한�
 
 # 기여 통계와 신뢰 점수: 경고 피드백으로 보고 차량의 신뢰도를 갱신하고, 합의 기준에 반영한다
 stats = defaultdict(lambda: {"reports": 0, "helped": 0, "emotes": {k: 0 for k in EMOTES},
-                             "correct": 0, "incorrect": 0})
+                             "correct": 0, "incorrect": 0, "charge_reports": 0})
 event_reporters = {}      # event_id -> 보고 차량들 (피드백을 누구에게 반영할지)
 feedback_given = set()    # (피드백한 차량, event_id) — 같은 경고에 한 번만
 LOW_TRUST = 0.3           # 피드백 3건 이상에서 이보다 낮으면 혼자서는 확정되지 않는다
@@ -390,6 +405,7 @@ def vehicle_stats(vid):
             "vehicle": vid, "reports": s["reports"], "helped": s["helped"], "emotes": dict(s["emotes"]),
             "accuracy": round(100 * s["correct"] / feedback) if feedback else None,
             "trust": round(trust(vid), 2), "top_pct": top_pct, "badges": badges,
+            "charge_reports": s["charge_reports"],
         }
 
 
@@ -444,43 +460,148 @@ def detect_zones(now):
     return zones
 
 
-def charge_seconds(soc):
-    """목표 충전량까지 걸리는 시간 (시연용 고정 출력·용량 가정)."""
-    return max(0.0, TARGET_SOC - (soc or 0)) / 100 * BATTERY_KWH / CHARGE_KW * 3600
+def charge_seconds(soc, kw):
+    """목표 충전량(80%)까지 걸리는 시간."""
+    return max(0.0, TARGET_SOC - (soc or 0)) / 100 * BATTERY_KWH / max(kw, 1.0) * 3600
 
 
-def charger_state(charger, live, extra=None):
-    """충전소별 현재 충전·대기 차량과, 이곳으로 향하는 차량들의 도착 시점 대기를 예측한다.
+def station_profile(c):
+    """충전소 정보: 실측 출력·평균 충전 시간·별점. HyperConnect 차량의 충전 기록이 쌓일수록 정확해진다."""
+    log = station_log[c["id"]]
+    sessions, ratings = log["sessions"], list(log["ratings"].values())
+    n = len(sessions)
+    kw = sum(x["kw"] for x in sessions) / n if n else c["kw"] * KW_BEFORE_MEASURED
+    avg_s = (AVG_SESSION_PRIOR_S * PRIOR_WEIGHT + sum(x["minutes"] * 60 for x in sessions)) / (PRIOR_WEIGHT + n)
+    return {"kw": round(kw), "kw_measured": n > 0, "rated_kw": c["kw"], "sessions": n,
+            "avg_session_min": round(avg_s / 60), "avg_session_s": avg_s,
+            "rating": round(sum(ratings) / len(ratings), 1) if ratings else None, "rating_n": len(ratings)}
 
+
+def soc_on_arrival(v, c):
+    """도착할 때의 배터리 잔량 어림: 남은 도로 거리만큼 소모."""
+    km = distance_m(v["lat"], v["lon"], c["lat"], c["lon"]) / 1000 * ROAD_FACTOR
+    return max(0.0, (v.get("soc") or 50) - km / KM_PER_KWH / BATTERY_KWH * 100)
+
+
+def charger_state(charger, live, now, extra=None):
+    """충전소의 지금 상태와, 이곳으로 향하는 차량별 도착 순번·대기·충전 완료 시각을 예측한다 (rev2).
+
+    - HyperConnect 차량: 배터리 잔량으로 남은 충전 시간을 정확히 계산
+    - 타사 차량: 공공 충전기 상태(충전 시작 시각)와 평균 충전 시간으로 남은 시간을 어림, 앞으로 올 차량은 시간당 도착 수로 어림
     extra = (vid, eta_s, soc) 이면 그 차량이 이 충전소로 간다고 가정해 함께 계산한다 (대안 충전소 비교용).
     """
+    prof = station_profile(charger)
+    kw, avg_s = prof["kw"], prof["avg_session_s"]
     at, coming = [], []
     for vid, v in live.items():
         if distance_m(v["lat"], v["lon"], charger["lat"], charger["lon"]) <= CHARGER_RADIUS_M:
             at.append(vid)
-        elif v.get("dest") and distance_m(v["dest"]["lat"], v["dest"]["lon"], charger["lat"], charger["lon"]) <= CHARGER_RADIUS_M:
-            coming.append((v["dest"].get("eta_s") or 0, vid, v.get("soc")))
+        elif charger_of(v.get("dest")) is charger:
+            coming.append((v["dest"].get("eta_s") or 0, vid, soc_on_arrival(v, charger)))
     charging = [vid for vid in at if live[vid].get("charging")]
-    waiting = [vid for vid in at if not live[vid].get("charging")]
+    waiting = [vid for vid in at if not live[vid].get("charging") and just_finished.get(vid) != charger["id"]]
     if extra and extra[0] not in at:
         coming = [c for c in coming if c[1] != extra[0]] + [(extra[1], extra[0], extra[2])]
 
-    # 충전기마다 비는 시각(초). 충전 중인 차량은 남은 충전 시간 뒤에 빈다.
-    free = sorted(charge_seconds(live[v].get("soc")) for v in charging[:charger["stalls"]])
-    free += [0.0] * (charger["stalls"] - len(free))
-    queue = [(0.0, v, live[v].get("soc")) for v in charging[charger["stalls"]:] + waiting] + sorted(coming)
+    pub = public_status.get(charger["id"])
+    if pub and now - pub["updated"] > PUBLIC_STALE_S:
+        pub = None
+    other_busy = pub["busy_since"] if pub else []
 
-    forecast, starts = {}, []
-    for eta, vid, soc in queue:
+    # 지금 충전기를 쓰는 차량과 남은 시간
+    occupants = [charge_seconds(live[v].get("soc"), kw) for v in charging]
+    occupants += [max(avg_s - (now - since), 300.0) for since in other_busy]
+    occupants.sort()
+    free = occupants[:charger["stalls"]] + [0.0] * max(0, charger["stalls"] - len(occupants))
+    queue = [(0.0, 0, None, d) for d in occupants[charger["stalls"]:]]
+    queue += [(0.0, 1, v, charge_seconds(live[v].get("soc"), kw)) for v in waiting]
+    queue += [(eta, 2, vid, charge_seconds(soc, kw)) for eta, vid, soc in coming]
+    # 앞으로 올 타사 차량 (통계적 어림): 시간당 도착 수만큼 고르게 도착한다고 본다
+    rate = pub["arrivals_per_hour"] if pub else 0.0
+    horizon = max([eta for eta, *_ in coming], default=0.0)
+    expected_other = 0
+    if rate > 0:
+        t = 1800 / rate
+        while t < horizon:
+            queue.append((t, 3, None, avg_s))
+            expected_other += 1
+            t += 3600 / rate
+    queue.sort(key=lambda q: (q[0], q[1]))
+
+    forecast, entries = {}, []
+    for eta, _, vid, dur in queue:
         free.sort()
         start = max(eta, free[0])
-        free[0] = start + charge_seconds(soc)
-        # 내가 도착했을 때 아직 충전을 시작하지 못하고 기다리는 앞 차량 수
-        ahead = sum(1 for s, e in starts if s > eta and e <= eta)
-        forecast[vid] = {"wait_s": round(start - eta), "ahead": ahead, "eta_s": round(eta)}
-        starts.append((start, eta))
-    return {"id": charger["id"], "name": charger["name"], "stalls": charger["stalls"],
-            "charging": len(charging), "waiting": len(waiting), "coming": len(coming), "forecast": forecast}
+        free[0] = start + dur
+        entries.append((eta, start))
+        if vid is not None:
+            # 내가 도착했을 때 아직 충전을 시작하지 못하고 기다리는 앞 차량 수 (+1 하면 내 순번)
+            ahead = sum(1 for e, st in entries[:-1] if e <= eta and st > eta)
+            forecast[vid] = {"eta_s": round(eta), "wait_s": round(start - eta), "ahead": ahead,
+                             "charge_s": round(dur), "start_ts": now + start, "done_ts": now + start + dur}
+    return {"id": charger["id"], "name": charger["name"], "stalls": charger["stalls"], **prof,
+            "charging": len(charging) + len(other_busy), "charging_network": len(charging),
+            "charging_other": len(other_busy), "waiting": len(waiting), "coming": len(coming),
+            "expected_other": expected_other, "public": pub is not None, "forecast": forecast}
+
+
+def track_charging(now, live):
+    """HyperConnect 차량의 충전 기록을 만든다: 충전이 끝나면 실측 출력·시간이 그 충전소 정보가 된다."""
+    for vid, v in live.items():
+        c = next((c for c in CHARGERS if distance_m(v["lat"], v["lon"], c["lat"], c["lon"]) <= CHARGER_RADIUS_M), None)
+        if c is None:
+            just_finished.pop(vid, None)
+        t = charge_track.get(vid)
+        if c and v.get("charging") and v.get("soc") is not None:
+            if t is None or t["station"] != c["id"]:
+                charge_track[vid] = {"station": c["id"], "start": now, "soc0": v["soc"], "soc": v["soc"], "last": now}
+                just_finished.pop(vid, None)
+                print(f"[charge] {vid} {c['name']} 충전 시작 (SoC {v['soc']}%)", flush=True)
+            else:
+                t["soc"], t["last"] = v["soc"], now
+        elif t is not None:
+            finish_session(vid, now)
+    for vid in [v for v in charge_track if v not in live]:
+        finish_session(vid, now)
+
+
+def finish_session(vid, now):
+    t = charge_track.pop(vid)
+    c = next(c for c in CHARGERS if c["id"] == t["station"])
+    minutes = (t["last"] - t["start"]) * demo["charge_time_scale"] / 60
+    gain = t["soc"] - t["soc0"]
+    if minutes < 1 or gain < 1:
+        return
+    kw = gain / 100 * BATTERY_KWH / (minutes / 60)
+    station_log[c["id"]]["sessions"].append({"vehicle": vid, "minutes": round(minutes, 1), "kw": round(kw, 1),
+                                             "soc_from": t["soc0"], "soc_to": t["soc"], "ts": now})
+    stats[vid]["charge_reports"] += 1
+    just_finished[vid] = c["id"]
+    print(f"[charge] {vid} {c['name']} 충전 완료 {minutes:.0f}분, SoC {t['soc0']}→{t['soc']}%, 실측 {kw:.0f}kW → 충전소 정보에 반영",
+          flush=True)
+    push(vid, {"kind": "charge_done", "type": "charge_done", "station": c["name"], "station_id": c["id"],
+               "minutes": round(minutes), "kw": round(kw), "soc_from": t["soc0"], "soc_to": t["soc"], "ts": now})
+
+
+def handle_rating(body):
+    """충전 후 별점 (1~5). 차량당 한 번, 다시 매기면 바뀐다."""
+    stars = int(body["stars"])
+    if not 1 <= stars <= 5 or not any(c["id"] == body["station"] for c in CHARGERS):
+        return {"ok": False}
+    with lock:
+        station_log[body["station"]]["ratings"][body["vehicle"]] = stars
+    print(f"[rating] {body['vehicle']} -> {body['station']} ★{stars}", flush=True)
+    return {"ok": True}
+
+
+def handle_public_status(body):
+    """공공 충전기 상태 입력 (환경공단 충전기 상태 API 대체): 충전 중인 충전기의 충전 시작 시각과 시간당 도착 수."""
+    now = time.time()
+    with lock:
+        public_status[body["station"]] = {
+            "busy_since": [now - m * 60 for m in body.get("busy_since_min_ago", [])],
+            "arrivals_per_hour": float(body.get("arrivals_per_hour", 0)), "updated": now}
+    return {"ok": True}
 
 
 def charger_of(dest):
@@ -512,7 +633,8 @@ def zone_notices(now):
 def charging_forecasts(now):
     global current_chargers
     live = live_vehicles(now)
-    current_chargers = [charger_state(c, live) for c in CHARGERS]
+    track_charging(now, live)
+    current_chargers = [charger_state(c, live, now) for c in CHARGERS]
     for vid, v in live.items():
         c = charger_of(v.get("dest"))
         if not c:
@@ -522,23 +644,33 @@ def charging_forecasts(now):
         f = state["forecast"].get(vid)
         if not f:
             continue
-        # 다른 충전소로 가면 얼마나 기다릴지: 거리 비율로 도착 시간을 어림한다
+        # 대안 충전소: 도착 시간은 거리 비율로 어림하고, 충전 '완료' 시각이 5분 이상 빠를 때만 권한다
         alt = None
         for other in CHARGERS:
             if other["id"] == c["id"]:
                 continue
             ratio = (distance_m(v["lat"], v["lon"], other["lat"], other["lon"])
                      / max(1.0, distance_m(v["lat"], v["lon"], c["lat"], c["lon"])))
-            alt_f = charger_state(other, live, (vid, f["eta_s"] * ratio, v.get("soc")))["forecast"][vid]
-            if alt_f["wait_s"] + 300 < f["wait_s"] and (alt is None or alt_f["wait_s"] < alt["wait_min"] * 60):
-                alt = {"name": other["name"], "wait_min": round(alt_f["wait_s"] / 60)}
-        item = {"kind": "charging", "type": "charging", "station": c["name"], "ahead": f["ahead"],
+            alt_f = charger_state(other, live, now, (vid, f["eta_s"] * ratio, soc_on_arrival(v, other)))["forecast"][vid]
+            if alt_f["done_ts"] + 300 < f["done_ts"] and (alt is None or alt_f["done_ts"] < alt["done_ts"]):
+                alt = {"name": other["name"], "wait_min": round(alt_f["wait_s"] / 60), "done_ts": alt_f["done_ts"]}
+        item = {"kind": "charging", "type": "charging", "station": c["name"], "station_id": c["id"],
+                "rating": state["rating"], "rating_n": state["rating_n"], "kw": state["kw"],
+                "kw_measured": state["kw_measured"], "sessions": state["sessions"],
+                "ahead": f["ahead"], "wait_min": round(f["wait_s"] / 60), "charge_min": round(f["charge_s"] / 60),
+                "eta_ts": now + f["eta_s"], "start_ts": f["start_ts"], "done_ts": f["done_ts"],
+                "stalls": state["stalls"], "charging_network": state["charging_network"],
+                "charging_other": state["charging_other"], "expected_other": state["expected_other"],
                 # 향하는 EV 수에서 자기 자신은 뺀다
-                "wait_min": round(f["wait_s"] / 60), "coming": max(0, state["coming"] - 1), "alt": alt, "ts": now}
-        signature = (item["station"], item["ahead"], item["wait_min"], item["coming"], json.dumps(alt))
+                "coming": max(0, state["coming"] - 1), "alt": alt, "ts": now}
+        signature = (item["ahead"], item["wait_min"], item["charge_min"], round(item["done_ts"] / 60),
+                     item["rating"], item["kw"], item["coming"], item["charging_network"], item["charging_other"],
+                     json.dumps(alt and alt["name"]))
         if charging_sent.get(vid) != signature and push(vid, item):
             charging_sent[vid] = signature
-            print(f"[charging] {vid} -> {c['name']} 앞 {f['ahead']}대, 대기 {item['wait_min']}분"
+            print(f"[charging] {vid} -> {c['name']} {f['ahead'] + 1}번째, 대기 {item['wait_min']}분, "
+                  f"충전 {item['charge_min']}분 ({state['kw']}kW{' 실측' if state['kw_measured'] else ' 어림'}), "
+                  f"충전 중 {state['charging_network']}+타사 {state['charging_other']}"
                   f"{', 대안 ' + alt['name'] if alt else ''}", flush=True)
 
 
@@ -724,6 +856,9 @@ class Handler(BaseHTTPRequestHandler):
             "/emote": ("vehicle", "emote", "target"),
             "/feedback": ("vehicle", "event_id", "correct"),
             "/forget": ("vehicle",),
+            "/rating": ("vehicle", "station", "stars"),
+            "/public_status": ("station",),
+            "/demo": (),
         }.get(path)
         if required is None:
             self._json(404, {"error": "not found"})
@@ -763,6 +898,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, handle_emote(body))
         elif path == "/feedback":
             self._json(200, handle_feedback(body))
+        elif path == "/rating":
+            self._json(200, handle_rating(body))
+        elif path == "/public_status":
+            self._json(200, handle_public_status(body))
+        elif path == "/demo":
+            demo.update({k: float(v) for k, v in body.items() if k in demo})
+            print(f"[demo] {demo}", flush=True)
+            self._json(200, demo)
         elif body["type"] == "weather_obs":
             confirmed = handle_weather(body)
             self._json(200, {"confirmed": [{"type": t, "notified": n} for t, n in confirmed]})

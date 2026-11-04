@@ -57,6 +57,8 @@ import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 /**
@@ -75,6 +77,10 @@ class MainActivity : Activity() {
     private lateinit var emoteView: TextView
     private lateinit var noticeView: TextView     // 정체·사고 구간 알림 (잠깐 표시)
     private lateinit var chargingView: TextView   // 목적지 충전소 대기 예측 (계속 표시)
+    private lateinit var ratingBar: LinearLayout  // 충전을 마친 뒤 충전소 별점 (정차 중에만)
+    private var pendingRating: ChargeDone? = null
+    // 시연용: 실행 인자로 차량 위치를 고정한다 (예: 충전소에 서 있는 차량). 실차는 내비 위치를 쓴다
+    private var fixedPosition: Pair<Double, Double>? = null
     private lateinit var emergencyView: TextView  // 긴급차량 접근 (지나갈 때까지 표시)
     private lateinit var laneView: TextView       // 차로 변경 의도 알림
     private lateinit var feedbackBar: LinearLayout  // 방금 받은 경고가 맞았는지 (정차·저속일 때만)
@@ -289,6 +295,7 @@ class MainActivity : Activity() {
             rightOffsetM = ((lane ?: BASE_LANE) - BASE_LANE) * LANE_WIDTH_M,
         )
         serverUrl = intent.getStringExtra("server") ?: DEFAULT_SERVER
+        if (intent.hasExtra("fix_lat")) fixedPosition = intent.getDoubleExtra("fix_lat", 0.0) to intent.getDoubleExtra("fix_lon", 0.0)
 
         prefs = Prefs(this)
         // 시연 자동화용: 실행 인자로 동의 상태를 미리 정한다 (실사용에서는 동의 화면에서만 바뀐다)
@@ -334,7 +341,8 @@ class MainActivity : Activity() {
             onDestination = { d ->
                 // 경로 안내 중일 때만 목적지가 있다. 충전소 대기 예측에 쓴다
                 destination = d?.takeIf { it.remainDistance > 0 }?.let { Destination(it.latitude, it.longitude, it.name, it.remainTime) }
-                if (destination == null) runOnUiThread { chargingView.visibility = View.GONE }
+                // 경로 안내가 끝나면 충전 예측 카드만 닫는다 (충전 완료·별점 카드는 남긴다)
+                if (destination == null && pendingRating == null) runOnUiThread { chargingView.visibility = View.GONE }
             },
             onStatus = { Log.i(TAG, "내비 = $it") },
         ).also { tracker ->
@@ -355,7 +363,7 @@ class MainActivity : Activity() {
         consent.hide()
         client = HyperConnectClient(
             baseUrl = serverUrl, vehicleId = vehicleId,
-            position = { position.current()?.let { (lat, lon, heading) -> Fix(lat, lon, heading, speedKph, lane, turnSignal, soc, charging, destination, role,
+            position = { (fixedPosition?.let { (lat, lon) -> Triple(lat, lon, 0.0) } ?: position.current())?.let { (lat, lon, heading) -> Fix(lat, lon, heading, speedKph, lane, turnSignal, soc, charging, destination, role,
                 autoThanks = prefs.autoThanks)
             } },
             onConnectionChanged = { connected ->
@@ -365,6 +373,7 @@ class MainActivity : Activity() {
             onWarning = ::showWarning,
             onEmote = ::showEmote,
             onCharging = ::showCharging,
+            onChargeDone = ::onChargeDone,
             onEmergency = ::showEmergency,
             onLane = ::showLane,
             onMergeDone = ::onMergeDone,
@@ -594,15 +603,49 @@ class MainActivity : Activity() {
 
     private val hideNotice = Runnable { noticeView.visibility = View.GONE }
 
+    private val clock = SimpleDateFormat("HH:mm", Locale.KOREA)
+    private fun hm(ms: Long) = clock.format(Date(ms))
+
+    /**
+     * 충전 예측 카드 (rev2): 충전소 정보 · 내 순번과 대기 · 충전 완료 시각 · 지금 충전 중인 차(타사 포함) · 대안.
+     * 주행 중에도 한눈에 읽히도록 세 줄로 줄인다.
+     */
     private fun showCharging(c: ChargingForecast) {
-        val wait = if (c.waitMin <= 0) "바로 충전 가능" else "도착 시 앞에 ${c.ahead}대 · 약 ${c.waitMin}분 대기"
-        val alt = c.altName?.let { "\n대안: $it · ${if ((c.altWaitMin ?: 0) <= 0) "대기 없음" else "약 ${c.altWaitMin}분 대기"}" } ?: ""
-        val text = "⚡  ${c.station} · $wait\n나 말고도 이 충전소로 향하는 EV ${c.coming}대$alt"
+        val star = c.rating?.let { "★%.1f(%d)".format(it, c.ratingN) } ?: "별점 없음"
+        val power = if (c.kwMeasured) "실측 ${c.kw}kW" else "약 ${c.kw}kW"
+        val queue = if (c.waitMin <= 0) "도착 ${hm(c.etaMs)} · 바로 충전" else "도착 ${hm(c.etaMs)} · ${c.ahead + 1}번째 · 약 ${c.waitMin}분 대기"
+        val busy = "충전 중 ${c.chargingNetwork + c.chargingOther}/${c.stalls}" +
+            (if (c.chargingOther > 0) "(타사 ${c.chargingOther})" else "") +
+            (if (c.coming > 0) " · 이리 오는 EV ${c.coming}대" else "") +
+            (if (c.expectedOther > 0) " · 타사 도착 예상 ${c.expectedOther}대" else "")
+        val alt = c.altName?.let { "\n대안: $it · ${c.altDoneMs?.let { ms -> "${hm(ms)} 완료" } ?: ""}" } ?: ""
+        val text = "⚡  ${c.station} $star · $power\n$queue → ${hm(c.doneMs)} 80% 완료\n$busy$alt"
         Log.i(TAG, "충전 예측: ${text.replace("\n", " / ")}")
         runOnUiThread {
             chargingView.text = text
             chargingView.visibility = View.VISIBLE
         }
+    }
+
+    /** 내 충전이 끝남: 기록이 충전소 정보가 되었음을 알리고, 정차 중이면 별점을 묻는다. */
+    private fun onChargeDone(d: ChargeDone) = runOnUiThread {
+        val text = "🔌  ${d.station} 충전 완료 · ${d.minutes}분 · 실측 ${d.kw}kW (${d.socFrom}→${d.socTo}%)\n이 기록은 다른 운전자의 충전 대기 예측에 쓰여요"
+        Log.i(TAG, "충전 완료: ${text.replace("\n", " / ")}")
+        chargingView.text = text
+        chargingView.visibility = View.VISIBLE
+        pendingRating = d
+        playTone(ToneGenerator.TONE_PROP_ACK, 150)
+    }
+
+    private fun answerRating(stars: Int) {
+        val d = pendingRating ?: return
+        client?.sendRating(d.stationId, stars)
+        Log.i(TAG, "별점 보냄: ${d.station} ★$stars")
+        update("마지막 별점", "${d.station} ★$stars")
+        pendingRating = null
+        ratingBar.visibility = View.GONE
+        chargingView.text = "🔌  ${d.station} ★$stars 고마워요 · 다음 운전자의 충전소 선택에 쓰여요"
+        chargingView.postDelayed({ chargingView.visibility = View.GONE }, 4000)
     }
 
     private fun showEmergency(e: EmergencyApproach) {
@@ -797,6 +840,7 @@ class MainActivity : Activity() {
             }
         }
         if (!slow) hideFeedback.run()
+        ratingBar.visibility = if (pendingRating != null && slow && !isBusy() && currentFeedback == null) View.VISIBLE else View.GONE
     }
 
     private val hideFeedback = Runnable {
@@ -824,6 +868,11 @@ class MainActivity : Activity() {
     //   adb shell am broadcast --user 10 -a com.hyperconnect.app.SET_LANE --ei lane 1
     private val laneReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == ACTION_CANCEL_ROUTE) {
+                Log.i(TAG, "시연 정리: 경로 안내 종료")
+                naviTracker?.cancelRoute()
+                return
+            }
             val newLane = intent.getIntExtra("lane", 0).takeIf { it > 0 } ?: return
             lane = newLane
             position.setRightOffset((newLane - BASE_LANE) * LANE_WIDTH_M)
@@ -832,7 +881,7 @@ class MainActivity : Activity() {
     }
 
     private fun registerLaneReceiver() {
-        val filter = IntentFilter(ACTION_SET_LANE)
+        val filter = IntentFilter(ACTION_SET_LANE).apply { addAction(ACTION_CANCEL_ROUTE) }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(laneReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
@@ -910,6 +959,19 @@ class MainActivity : Activity() {
             addView(bigButton("맞았어요") { answerFeedback(true) })
             addView(bigButton("아니었어요") { answerFeedback(false) })
         }
+        ratingBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.rgb(40, 44, 54))
+            setPadding(48, 16, 48, 16)
+            visibility = View.GONE
+            addView(TextView(this@MainActivity).apply {
+                text = "이 충전소 어땠나요?"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f)
+            })
+            for (n in 1..5) addView(bigButton("★$n") { answerRating(n) })
+        }
         mergeThanksButton = Button(this).apply {
             text = "👍  양보해 준 뒤차에게 고마워요"
             isAllCaps = false
@@ -947,6 +1009,7 @@ class MainActivity : Activity() {
             addView(chargingView)
             addView(statusView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(feedbackBar)
+            addView(ratingBar)
             addView(mergeThanksButton)
             addView(emoteBar)
         }
@@ -1014,6 +1077,7 @@ class MainActivity : Activity() {
         private const val FEEDBACK_SHOW_MS = 8000L
         private const val FEEDBACK_MAX_AGE_MS = 120_000L  // 2분 넘게 지난 경고는 묻지 않는다
         private const val ACTION_SET_LANE = "com.hyperconnect.app.SET_LANE"
+        private const val ACTION_CANCEL_ROUTE = "com.hyperconnect.app.CANCEL_ROUTE"  // 시연용: 경로 안내 종료
         private const val RED_ALERT_M = 300
         private val FAR_NOTICE_TYPES = setOf(SecondaryAccidentDetector.EVENT_CRASH, SecondaryAccidentDetector.EVENT_STOPPED)
         private val EMOTE_RECEIVED = mapOf("thanks" to "가 고맙대요", "sorry" to "가 미안하대요", "hello" to "가 인사해요")

@@ -9,3 +9,6 @@ local.properties
 *접수양식*.docx
 __pycache__/
 *.pyc
+
+# 기능별 시연 클립 (용량이 커서 저장소에 올리지 않음)
+demo/clips/

@@ -33,6 +33,13 @@ class NaviTracker(
     private var connected = false
     private var pendingRoute: RouteInfo? = null
 
+    /** 진행 중인 경로 안내를 끝낸다 (시연 정리용). */
+    fun cancelRoute() = try {
+        navi.cancelRoute()
+    } catch (e: Exception) {
+        Log.w(TAG, "경로 취소 실패", e)
+    }
+
     /** 목적지로 경로 안내를 요청한다. 아직 연결 전이면 연결 직후 요청한다. */
     fun routeTo(lat: Double, lon: Double, name: String) {
         val route = RouteInfo(

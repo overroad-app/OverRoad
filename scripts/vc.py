@@ -9,6 +9,8 @@ Virtual Console은 브라우저 세션 하트비트가 있어야 제어를 받�
   python3 scripts/vc.py drive 60                           D 기어로 해당 속도 유지
   python3 scripts/vc.py stop                               0km/h, D 기어 유지
   python3 scripts/vc.py park
+  python3 scripts/vc.py soc 35                             배터리 잔량(%)
+  python3 scripts/vc.py charge on|off                      충전 스위치 (충전 시작·종료)
 """
 
 import argparse
@@ -45,6 +47,10 @@ if __name__ == "__main__":
         put(base, "/vehicle/controls", speed=a.args[0], accelerator=30, brake=0)
     elif a.cmd == "stop":
         put(base, "/vehicle/controls", speed=0, accelerator=0, brake=60)
+    elif a.cmd == "soc":
+        put(base, "/vehicle/ev-battery", field="soc", value=a.args[0])
+    elif a.cmd == "charge":
+        put(base, "/vehicle/ev-battery", field="charge_switch", value=str(a.args[0] == "on").lower())
     elif a.cmd == "park":
         put(base, "/vehicle/controls", speed=0, accelerator=0, brake=0)
         put(base, "/vehicle/gear", gear="Park")
