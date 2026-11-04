@@ -5,6 +5,7 @@ Virtual Console은 브라우저 세션 하트비트가 있어야 제어를 받�
   python3 scripts/vc.py [--port 8088] hazard on|off
   python3 scripts/vc.py telltale Airbag On|Blink|Off      (ABS, ESC, FrontFogLamp ...)
   python3 scripts/vc.py wiper Off|Auto|Low|High
+  python3 scripts/vc.py turn left|right|off                방향지시등
   python3 scripts/vc.py drive 60                           D 기어로 해당 속도 유지
   python3 scripts/vc.py stop                               0km/h, D 기어 유지
   python3 scripts/vc.py park
@@ -35,6 +36,8 @@ if __name__ == "__main__":
         put(base, "/vehicle/lights", feature="hazard", value=str(a.args[0] == "on").lower())
     elif a.cmd == "telltale":
         put(base, "/vehicle/telltales/simulator", type=a.args[0], state=a.args[1], color="Red")
+    elif a.cmd == "turn":
+        put(base, "/vehicle/turn-signal", mode={"left": "BlinkLeft", "right": "BlinkRight", "off": "Off"}[a.args[0]])
     elif a.cmd == "wiper":
         put(base, "/vehicle/body", front_wiper=a.args[0])
     elif a.cmd == "drive":

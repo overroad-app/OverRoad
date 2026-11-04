@@ -9,7 +9,13 @@ import kotlin.math.sin
  * 에뮬레이터의 내비 위치는 고정되어 있어, 시연에서는 이 방식으로 차량을 이동시킨다.
  * [startOffsetM]은 기준점에서 진행 방향으로의 시작 거리(음수면 뒤쪽), [rightOffsetM]은 오른쪽 거리다.
  */
-class PositionEstimator(private val startOffsetM: Double, private val rightOffsetM: Double = 0.0) {
+class PositionEstimator(private val startOffsetM: Double, private var rightOffsetM: Double = 0.0) {
+
+    /** 차로를 바꾸면 옆 방향 위치만 옮긴다. */
+    @Synchronized
+    fun setRightOffset(meters: Double) {
+        rightOffsetM = meters
+    }
 
     private var baseLat: Double? = null
     private var baseLon = 0.0

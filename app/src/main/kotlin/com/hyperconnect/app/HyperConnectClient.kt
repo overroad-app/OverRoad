@@ -9,7 +9,16 @@ import java.net.URLEncoder
 /** 서버에서 받은 경고. */
 data class RoadWarning(
     val type: String, val distanceM: Int, val lane: String, val reporters: Int,
-    val zoneLabel: String? = null, val lengthM: Int? = null,
+    val zoneLabel: String? = null, val lengthM: Int? = null, val eventId: String? = null,
+)
+
+/** 차로 변경 알림. [merging]이면 내가 진입하려는 쪽, 아니면 내 차로로 들어오려는 차가 있는 쪽. */
+data class LaneNotice(val merging: Boolean, val distanceM: Int, val side: String)
+
+/** 내 기여 통계 (설정 화면). */
+data class MyStats(
+    val reports: Int, val helped: Int, val thanks: Int, val sorry: Int, val hello: Int,
+    val accuracy: Int?, val topPct: Int?, val badges: List<String>,
 )
 
 /** 목적지 충전소의 도착 시점 대기 예측. [altName]이 있으면 대기가 더 짧은 대안 충전소다. */
@@ -25,12 +34,13 @@ data class EmergencyApproach(val label: String, val symbol: String, val distance
 data class Destination(val lat: Double, val lon: Double, val name: String, val etaS: Int)
 
 /** 다른 차량이 보낸 이모트. [fromAhead]가 true면 앞차가 보냈다. 보낸 차의 ID는 알려주지 않는다. */
-data class Emote(val name: String, val symbol: String, val fromAhead: Boolean)
+data class Emote(val name: String, val symbol: String, val fromAhead: Boolean, val auto: Boolean = false)
 
 /** 차량 상태: 위치, 진행 방향°, 속도, 차로(모르면 null), 방향지시등(LEFT/RIGHT/null), 배터리·충전·목적지, 긴급차량 역할. */
 data class Fix(
     val lat: Double, val lon: Double, val heading: Double, val speedKph: Float, val lane: Int?, val turn: String?,
     val soc: Int? = null, val charging: Boolean = false, val dest: Destination? = null, val role: String? = null,
+    val autoThanks: Boolean = false,
 )
 
 /**
@@ -46,6 +56,8 @@ class HyperConnectClient(
     private val onEmote: (Emote) -> Unit,
     private val onCharging: (ChargingForecast) -> Unit,
     private val onEmergency: (EmergencyApproach) -> Unit,
+    private val onLane: (LaneNotice) -> Unit,
+    private val onMergeDone: (auto: Boolean) -> Unit,
 ) {
     @Volatile
     private var running = false
@@ -97,12 +109,48 @@ class HyperConnectClient(
         }, "hc-emote").start()
     }
 
+    /** 받은 경고가 맞았는지 알린다 (보고한 차량의 신뢰 점수에 반영). */
+    fun sendFeedback(eventId: String, correct: Boolean) {
+        Thread({
+            try {
+                post("/feedback", JSONObject().put("vehicle", vehicleId).put("event_id", eventId).put("correct", correct))
+            } catch (e: Exception) {
+                Log.w(TAG, "피드백 전송 실패", e)
+            }
+        }, "hc-feedback").start()
+    }
+
+    /** 내 기여 통계를 가져온다. */
+    fun fetchStats(onResult: (MyStats?) -> Unit) {
+        Thread({
+            val result = try {
+                val conn = URL("$baseUrl/stats?vehicle=${URLEncoder.encode(vehicleId, "UTF-8")}").openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 3000
+                val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                conn.disconnect()
+                val e = o.getJSONObject("emotes")
+                MyStats(
+                    reports = o.getInt("reports"), helped = o.getInt("helped"),
+                    thanks = e.optInt("thanks"), sorry = e.optInt("sorry"), hello = e.optInt("hello"),
+                    accuracy = if (o.isNull("accuracy")) null else o.getInt("accuracy"),
+                    topPct = if (o.isNull("top_pct")) null else o.getInt("top_pct"),
+                    badges = o.getJSONArray("badges").let { a -> List(a.length()) { a.getString(it) } },
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "통계 조회 실패", e)
+                null
+            }
+            onResult(result)
+        }, "hc-stats").start()
+    }
+
     private fun Fix.toJson() = JSONObject()
         .put("vehicle", vehicleId).put("lat", lat).put("lon", lon).put("heading", heading)
         .put("speed_kph", speedKph.toDouble()).put("lane", lane ?: JSONObject.NULL)
         .put("turn", turn ?: JSONObject.NULL)
         .put("soc", soc ?: JSONObject.NULL).put("charging", charging)
-        .put("role", role ?: JSONObject.NULL)
+        .put("role", role ?: JSONObject.NULL).put("auto_thanks", autoThanks)
         .put("dest", dest?.let {
             JSONObject().put("lat", it.lat).put("lon", it.lon).put("name", it.name).put("eta_s", it.etaS)
         } ?: JSONObject.NULL)
@@ -153,7 +201,10 @@ class HyperConnectClient(
                         if (!line.startsWith("data: ")) continue
                         val o = JSONObject(line.removePrefix("data: "))
                         when (o.optString("kind")) {
-                            "emote" -> onEmote(Emote(o.getString("emote"), o.getString("symbol"), o.optString("from") == "ahead"))
+                            "emote" -> onEmote(Emote(o.getString("emote"), o.getString("symbol"),
+                                o.optString("from") == "ahead", o.optBoolean("auto")))
+                            "lane" -> onLane(LaneNotice(o.optString("role") == "merging", o.getInt("distance_m"), o.optString("side")))
+                            "merge_done" -> onMergeDone(o.optBoolean("auto"))
                             "charging" -> onCharging(ChargingForecast(
                                 station = o.getString("station"), ahead = o.getInt("ahead"),
                                 waitMin = o.getInt("wait_min"), coming = o.getInt("coming"),
@@ -185,6 +236,7 @@ class HyperConnectClient(
             reporters = o.optInt("reporters", 1),
             zoneLabel = o.optString("label").ifEmpty { null },
             lengthM = if (o.has("length_m")) o.optInt("length_m") else null,
+            eventId = o.optString("event_id").ifEmpty { null }?.takeIf { it != "null" },
         )
     }
 

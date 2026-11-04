@@ -21,6 +21,7 @@ for v in 10 20 30 40 50 60 70 80; do controls "$v" 40 0; sleep 0.3; done
 sleep 1.5
 
 echo "급제동: 80 → 20km/h"
+echo "T0 $(perl -MTime::HiRes=time -e 'printf "%.3f", time')"  # 지연시간 측정용: 브레이크 명령 시각
 for v in 72 62 52 42 32 22 20; do controls "$v" 0 90; sleep 0.2; done
 sleep 1
 

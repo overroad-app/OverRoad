@@ -9,12 +9,17 @@
         soc=35                      배터리 잔량 %
         dest=PANGYO[,eta=300]        목적지 충전소 (eta 생략 시 거리·속도로 계산)
         at=PANGYO[,charging=1]       충전소에 있는 차량 (charging=1이면 충전 중)
+        turn=L@3                     3초에 왼쪽 깜빡이 켬 (L|R)
+        lane=1@6                     6초에 1차로로 이동 (이동하면 깜빡이 끔)
+        auto=1                       자동 감사 인사 켬
       --jam 시작 거리:대수:속도[:merge] → J1..Jn을 1~3차로에 30m 간격으로 배치
                                          (merge면 3차로가 끝나 3차로 차량이 왼쪽 깜빡이)
   python3 scripts/fleet.py weather A --rain 2 --fog
       가상 차량 A가 현재 위치에서 기상 관측을 보고 (run 중인 차량이어야 한다)
   python3 scripts/fleet.py report J9 crash
       가상 차량이 현재 위치에서 이벤트(crash, stopped_vehicle, hard_brake)를 보고
+  python3 scripts/fleet.py feedback D correct|wrong
+      가상 차량 D가 마지막으로 받은 경고에 피드백 (신뢰 점수 반영)
   python3 scripts/fleet.py emote D thanks ahead
       가상 차량 D가 바로 앞차에게 이모트(thanks, sorry, hello)를 보낸다
 """
@@ -56,7 +61,10 @@ def listen(vid):
                         w = json.loads(line[6:])
                         if w.get("kind") == "emote":
                             who = "앞차" if w["from"] == "ahead" else "뒤차"
-                            print(f"[{vid}] {w['symbol']} 이모트 수신: {who}가 {w['emote']}", flush=True)
+                            print(f"[{vid}] {w['symbol']} 이모트 수신: {who}가 {w['emote']}"
+                                  f"{' (자동 감사 인사)' if w.get('auto') else ''}", flush=True)
+                        elif w.get("kind") in ("lane", "merge_done", "charging", "emergency"):
+                            print(f"[{vid}] {w['kind']} {w}", flush=True)
                         else:
                             print(f"[{vid}] ⚠ 경고 수신: {w['type']} {w['distance_m']}m 앞 ({w['lane']})", flush=True)
         except Exception:
@@ -78,14 +86,18 @@ def run(args):
         fleet.append({"id": vid, "lane": int(lane), "fwd": float(fwd), "speed": speed, "turn": turn,
                       "role": opts.get("role"), "soc": int(opts["soc"]) if "soc" in opts else None,
                       "dest": chargers.get(opts.get("dest")), "eta": float(opts["eta"]) if "eta" in opts else None,
-                      "at": chargers.get(opts.get("at")), "charging": opts.get("charging") == "1"})
+                      "at": chargers.get(opts.get("at")), "charging": opts.get("charging") == "1",
+                      "turn_at": (opts["turn"].split("@") if "turn" in opts else None),
+                      "lane_at": (opts["lane"].split("@") if "lane" in opts else None),
+                      "auto": opts.get("auto") == "1"})
     if args.jam:
         start, count, speed, *kind = args.jam.split(":")
         for i in range(int(count)):
             lane = i % 3 + 1
             turn = "LEFT" if kind == ["merge"] and lane == 3 else None
             fleet.append({"id": f"J{i + 1}", "lane": lane, "fwd": float(start) + i * 30, "speed": float(speed), "turn": turn,
-                          "role": None, "soc": None, "dest": None, "eta": None, "at": None, "charging": False})
+                          "role": None, "soc": None, "dest": None, "eta": None, "at": None, "charging": False,
+                          "turn_at": None, "lane_at": None, "auto": False})
     for v in fleet:
         threading.Thread(target=listen, args=(v["id"],), daemon=True).start()
         extra = " ".join(x for x in (
@@ -99,6 +111,13 @@ def run(args):
     while True:
         t = time.time() - start
         for v in fleet:
+            # 예약된 깜빡이·차로 변경
+            if v["turn_at"] and t >= float(v["turn_at"][1]) and not v.get("turned"):
+                v["turn"], v["turned"] = {"L": "LEFT", "R": "RIGHT"}[v["turn_at"][0]], True
+                print(f"[{v['id']}] 깜빡이 {v['turn']}", flush=True)
+            if v["lane_at"] and t >= float(v["lane_at"][1]) and not v.get("moved"):
+                v["lane"], v["turn"], v["moved"] = int(v["lane_at"][0]), None, True
+                print(f"[{v['id']}] {v['lane']}차로로 이동", flush=True)
             if v["at"]:  # 충전소에 서 있는 차량
                 lat, lon = v["at"]["lat"], v["at"]["lon"]
             else:
@@ -112,8 +131,17 @@ def run(args):
                 dest = {"lat": d["lat"], "lon": d["lon"], "name": d["name"], "eta_s": max(0, round(eta - t))}
             call("/position", {"vehicle": v["id"], "lat": lat, "lon": lon, "heading": anchor["heading"],
                                "speed_kph": 0 if v["at"] else v["speed"], "lane": v["lane"], "turn": v["turn"],
-                               "role": v["role"], "soc": v["soc"], "charging": v["charging"], "dest": dest})
+                               "role": v["role"], "soc": v["soc"], "charging": v["charging"], "dest": dest,
+                               "auto_thanks": v["auto"]})
         time.sleep(0.5)
+
+
+def feedback(args):
+    alerts = [a for a in call("/status")["alerts"] if a["to"] == args.vehicle and a.get("event_id")]
+    if not alerts:
+        raise SystemExit(f"{args.vehicle}이 받은 경고가 없습니다")
+    print(call("/feedback", {"vehicle": args.vehicle, "event_id": alerts[-1]["event_id"],
+                             "correct": args.verdict == "correct"}))
 
 
 def report(args):
@@ -148,6 +176,9 @@ if __name__ == "__main__":
     ev = sp.add_parser("report")
     ev.add_argument("vehicle")
     ev.add_argument("type", choices=["crash", "stopped_vehicle", "hard_brake"])
+    fb = sp.add_parser("feedback")
+    fb.add_argument("vehicle")
+    fb.add_argument("verdict", choices=["correct", "wrong"])
     e = sp.add_parser("emote")
     e.add_argument("vehicle")
     e.add_argument("emote", choices=["thanks", "sorry", "hello"])
@@ -159,5 +190,7 @@ if __name__ == "__main__":
         weather(a)
     elif a.cmd == "report":
         report(a)
+    elif a.cmd == "feedback":
+        feedback(a)
     else:
         print(call("/emote", {"vehicle": a.vehicle, "emote": a.emote, "target": a.target}))
