@@ -19,11 +19,14 @@ import ai.pleos.playground.vehicle.constant.area.TurnSignalValue
 import android.app.Activity
 import android.car.Car
 import android.car.VehiclePropertyIds
+import android.car.drivingstate.CarUxRestrictions
+import android.car.drivingstate.CarUxRestrictionsManager
 import android.car.hardware.CarPropertyValue
 import android.car.hardware.property.CarPropertyManager
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.SoundPool
 import android.media.ToneGenerator
@@ -39,6 +42,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -72,6 +76,12 @@ class MainActivity : Activity() {
     private lateinit var emoteBar: LinearLayout
     private lateinit var prefs: Prefs
     private lateinit var settings: SettingsPanel
+    private lateinit var gearButton: Button
+    private lateinit var offlineView: TextView    // 서버 연결이 끊기면 경고를 받을 수 없다는 안내
+
+    // 플랫폼 주행 규제 (CarUxRestrictions). 설정 화면은 NO_SETUP이 걸리면(정차·주행 중) 열 수 없다
+    private var uxManager: CarUxRestrictionsManager? = null
+    @Volatile private var setupRestricted = false
 
     // 주의 분산 대응: 주행 중 이모트는 소리만, 바쁜 순간(경고·차로 변경)에는 미뤘다가 들려준다
     private val pendingEmotes = ArrayDeque<Emote>()
@@ -92,13 +102,17 @@ class MainActivity : Activity() {
     private lateinit var position: PositionEstimator
     private var ttsReady = false
     private val tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100)
+    // 모든 효과음·음성은 재생 전에 오디오 포커스를 잠깐(MAY_DUCK) 받아 음악·내비 소리를 낮추고, 끝나면 돌려준다
+    private val alertAttributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+        .build()
     private val sounds = SoundPool.Builder()
         .setMaxStreams(2)
-        .setAudioAttributes(AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build())
+        .setAudioAttributes(alertAttributes)
         .build()
+    private val audioManager by lazy { getSystemService(AudioManager::class.java) }
+    private var focusRequest: AudioFocusRequest? = null
     // 이모트 효과음: scripts/make_emote_sounds.py로 직접 합성한 소리
     private val emoteSounds = mutableMapOf<String, Int>()
     private val handler = Handler(Looper.getMainLooper())
@@ -267,6 +281,8 @@ class MainActivity : Activity() {
         registerListeners()
         handler.post(ticker)
 
+        car = Car.createCar(this)
+        watchUxRestrictions()
         if (checkSelfPermission(Car.PERMISSION_SPEED) == PackageManager.PERMISSION_GRANTED) {
             startSpeed()
         } else {
@@ -276,6 +292,12 @@ class MainActivity : Activity() {
         tts = TextToSpeech(this) { status ->
             ttsReady = status == TextToSpeech.SUCCESS && tts?.setLanguage(Locale.KOREAN)?.let { it >= 0 } == true
             Log.i(TAG, "TTS 사용 가능: $ttsReady")
+            tts?.setAudioAttributes(alertAttributes)
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(id: String?) {}
+                override fun onDone(id: String?) { if (id == UTTERANCE_WARNING) handler.post(releaseFocus) }
+                @Deprecated("기본 오류 콜백") override fun onError(id: String?) { handler.post(releaseFocus) }
+            })
         }
 
         naviTracker = NaviTracker(
@@ -302,7 +324,10 @@ class MainActivity : Activity() {
             position = { position.current()?.let { (lat, lon, heading) -> Fix(lat, lon, heading, speedKph, lane, turnSignal, soc, charging, destination, role,
                 autoThanks = prefs.autoThanks)
             } },
-            onConnectionChanged = { update("서버", if (it) "연결됨" else "끊김 (재연결 중)") },
+            onConnectionChanged = { connected ->
+                update("서버", if (connected) "연결됨" else "끊김 (재연결 중)")
+                runOnUiThread { offlineView.visibility = if (connected) View.GONE else View.VISIBLE }
+            },
             onWarning = ::showWarning,
             onEmote = ::showEmote,
             onCharging = ::showCharging,
@@ -317,8 +342,40 @@ class MainActivity : Activity() {
         else update("속도", "권한 없음")
     }
 
+    /** 맨 위 화면에서 뒤로 가기(CCP Back 포함)는 앱을 끄지 않고 숨긴다. 숨겨져도 경고 수신은 계속된다. */
+    @Deprecated("Activity 기본 뒤로 가기 처리")
+    override fun onBackPressed() {
+        if (settings.view.visibility == View.VISIBLE) {
+            settings.view.visibility = View.GONE
+        } else {
+            moveTaskToBack(true)
+        }
+    }
+
+    /** 플랫폼이 내려주는 주행 규제를 따른다. 에뮬레이터 실측: 주차 0x0, 정차·주행 0x50(NO_VIDEO + NO_SETUP). */
+    private fun watchUxRestrictions() {
+        val manager = car?.getCarManager(Car.CAR_UX_RESTRICTION_SERVICE) as? CarUxRestrictionsManager ?: return
+        uxManager = manager
+        applyUxRestrictions(manager.currentCarUxRestrictions)
+        manager.registerListener { applyUxRestrictions(it) }
+    }
+
+    private fun applyUxRestrictions(r: CarUxRestrictions?) {
+        val restricted = r != null && r.isRequiresDistractionOptimization &&
+            (r.activeRestrictions and CarUxRestrictions.UX_RESTRICTIONS_NO_SETUP) != 0
+        if (restricted == setupRestricted && r != null) return
+        setupRestricted = restricted
+        Log.i(TAG, "주행 규제 = 0x${Integer.toHexString(r?.activeRestrictions ?: 0)} (설정 화면 ${if (restricted) "잠김" else "허용"})")
+        runOnUiThread {
+            gearButton.alpha = if (restricted) 0.35f else 1f
+            if (restricted) settings.view.visibility = View.GONE
+        }
+    }
+
     override fun onDestroy() {
         handler.removeCallbacks(ticker)
+        releaseFocus.run()
+        uxManager?.unregisterListener()
         unregisterReceiver(laneReceiver)
         client?.stop()
         naviTracker?.stop()
@@ -340,8 +397,7 @@ class MainActivity : Activity() {
     }
 
     private fun startSpeed() {
-        val c = Car.createCar(this)
-        car = c
+        val c = car ?: Car.createCar(this).also { car = it }
         propertyManager = (c.getCarManager(Car.PROPERTY_SERVICE) as CarPropertyManager).also {
             it.registerCallback(speedCallback, VehiclePropertyIds.PERF_VEHICLE_SPEED, CarPropertyManager.SENSOR_RATE_FASTEST)
         }
@@ -423,7 +479,7 @@ class MainActivity : Activity() {
             noticeView.removeCallbacks(hideNotice)
             noticeView.postDelayed(hideNotice, NOTICE_SHOW_MS)
         }
-        tone.startTone(ToneGenerator.TONE_PROP_ACK, 150)
+        playTone(ToneGenerator.TONE_PROP_ACK, 150)
     }
 
     private val hideNotice = Runnable { noticeView.visibility = View.GONE }
@@ -451,7 +507,7 @@ class MainActivity : Activity() {
             emergencyView.postDelayed(hideEmergency, if (e.passed) 3000L else 6000L)
             if (first && !e.passed) {
                 Log.i(TAG, "긴급차량: ${text.replace("\n", " / ")}")
-                tone.startTone(ToneGenerator.TONE_CDMA_HIGH_L, 800)
+                playTone(ToneGenerator.TONE_CDMA_HIGH_L, 800)
             } else if (e.passed) {
                 Log.i(TAG, "긴급차량: $text")
             }
@@ -486,11 +542,51 @@ class MainActivity : Activity() {
             warningView.removeCallbacks(hideWarning)
             warningView.postDelayed(hideWarning, WARNING_SHOW_MS)
         }
-        tone.startTone(ToneGenerator.TONE_PROP_BEEP2, 600)
-        if (ttsReady) tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "warning")
+        withAudioFocus(if (ttsReady) WARNING_VOICE_MAX_MS else 800L) {
+            tone.startTone(ToneGenerator.TONE_PROP_BEEP2, 600)
+            if (ttsReady) {
+                // 음성 안내 앞에 짧은 묵음을 넣어 첫 음절이 잘리지 않게 한다 (Pleos 음성 안내 선행 묵음 가이드)
+                tts?.playSilentUtterance(TTS_PREROLL_MS, TextToSpeech.QUEUE_FLUSH, null)
+                tts?.speak(message, TextToSpeech.QUEUE_ADD, null, UTTERANCE_WARNING)
+            }
+        }
     }
 
     private val hideWarning = Runnable { warningView.visibility = View.GONE }
+
+    private fun playTone(type: Int, durationMs: Int) = withAudioFocus(durationMs + 200L) { tone.startTone(type, durationMs) }
+
+    /** 포커스를 받은 경우에만 소리를 낸다. 거부되면(통화·긴급음 등) 소리를 생략하고 화면 표시만 남는다. */
+    private fun withAudioFocus(holdMs: Long, play: () -> Unit) {
+        val request = focusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            .setAudioAttributes(alertAttributes)
+            .setOnAudioFocusChangeListener(::onAudioFocusChange, handler)
+            .build()
+        if (audioManager.requestAudioFocus(request) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            Log.i(TAG, "오디오 포커스 거부: 소리 생략")
+            return
+        }
+        focusRequest = request
+        play()
+        handler.removeCallbacks(releaseFocus)
+        handler.postDelayed(releaseFocus, holdMs)
+    }
+
+    /** 다른 소리(통화, 음성 비서 등)가 포커스를 가져가면 우리 소리를 바로 멈추고 포커스를 돌려준다. */
+    private fun onAudioFocusChange(change: Int) {
+        if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+            Log.i(TAG, "오디오 포커스 상실($change): 소리 중단")
+            tone.stopTone()
+            tts?.stop()
+            sounds.autoPause()
+            releaseFocus.run()
+        }
+    }
+
+    private val releaseFocus = Runnable {
+        focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        focusRequest = null
+    }
 
     /** 이모트 수신: 꺼져 있으면 무시, 바쁜 순간이면 미뤘다가, 주행 중이면 소리만 들려준다. */
     private fun showEmote(e: Emote) = runOnUiThread {
@@ -506,7 +602,7 @@ class MainActivity : Activity() {
     private fun playEmote(e: Emote) {
         val who = if (e.fromAhead) "앞차" else "뒤차"
         val text = "${e.symbol}  $who${EMOTE_RECEIVED[e.name] ?: ""}"
-        emoteSounds[e.name]?.let { sounds.play(it, 1f, 1f, 1, 0, 1f) }
+        emoteSounds[e.name]?.let { id -> withAudioFocus(EMOTE_SOUND_MS) { sounds.play(id, 1f, 1f, 1, 0, 1f) } }
         if (isSlow()) {
             Log.i(TAG, "이모트 수신: $text")
             showEmoteBanner(text)
@@ -543,7 +639,7 @@ class MainActivity : Activity() {
         laneView.removeCallbacks(hideLane)
         laneView.postDelayed(hideLane, LANE_SHOW_MS)
         busyUntilMs = SystemClock.elapsedRealtime() + LANE_SHOW_MS
-        tone.startTone(ToneGenerator.TONE_PROP_BEEP, 300)
+        playTone(ToneGenerator.TONE_PROP_BEEP, 300)
     }
 
     private val hideLane = Runnable { laneView.visibility = View.GONE }
@@ -552,7 +648,7 @@ class MainActivity : Activity() {
     private fun onMergeDone(auto: Boolean) = runOnUiThread {
         if (auto) {
             update("마지막 이모트", "👍 자동 감사 인사 · 양보해 준 뒤차에게 보냈어요")
-            tone.startTone(ToneGenerator.TONE_PROP_ACK, 120)
+            playTone(ToneGenerator.TONE_PROP_ACK, 120)
         } else if (prefs.emoteButtons && isSlow()) {
             mergeThanksButton.visibility = View.VISIBLE
             mergeThanksButton.removeCallbacks(hideMergeThanks)
@@ -600,10 +696,10 @@ class MainActivity : Activity() {
         hideFeedback.run()
     }
 
-    /** 설정·내 기여 화면은 정차 중에만 연다. */
+    /** 설정·내 기여 화면은 플랫폼 주행 규제상 주차(P) 상태에서만 연다. */
     private fun openSettings() {
-        if (!isSlow()) {
-            Toast.makeText(this, "정차 중에 열 수 있어요", Toast.LENGTH_SHORT).show()
+        if (setupRestricted || !isSlow()) {
+            Toast.makeText(this, "주차(P) 상태에서 열 수 있어요", Toast.LENGTH_SHORT).show()
             return
         }
         settings.view.visibility = View.VISIBLE
@@ -717,8 +813,18 @@ class MainActivity : Activity() {
             addView(emoteButton("🙏 뒤차에 미안해요", "sorry", toAhead = false))
             addView(emoteButton("👍 앞차에 고마워요", "thanks", toAhead = true))
         }
+        offlineView = TextView(this).apply {
+            text = "📡  서버 연결 끊김 · 재연결 중 (지금은 경고를 받을 수 없어요)"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.rgb(90, 90, 100))
+            gravity = Gravity.CENTER
+            setPadding(32, 16, 32, 16)
+            visibility = View.GONE
+        }
         val main = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            addView(offlineView)
             addView(warningView)
             addView(laneView)
             addView(emoteView)
@@ -732,11 +838,12 @@ class MainActivity : Activity() {
         }
         settings = SettingsPanel(this, prefs) { settings.view.visibility = View.GONE }
         // 화면 구석의 설정 버튼: 내 기여·베스트 드라이버, 이모트 설정
-        val gear = Button(this).apply {
+        gearButton = Button(this).apply {
             text = "⚙"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
             setOnClickListener { openSettings() }
         }
+        val gear = gearButton
         setContentView(FrameLayout(this).apply {
             addView(main)
             addView(gear, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -776,7 +883,11 @@ class MainActivity : Activity() {
         private const val WARNING_SHOW_MS = 8000L
         private const val EMOTE_SHOW_MS = 3000L
         private const val NOTICE_SHOW_MS = 6000L
-        private const val SLOW_KPH = 10f              // 이 속도 이하일 때만 화면 조작 요소를 보여준다
+        private const val SLOW_KPH = 5f               // 플랫폼 주행 규제가 켜지는 기준(5km/h 초과)에 맞춘다
+        private const val TTS_PREROLL_MS = 180L        // 음성 안내 선행 묵음 (가이드 권장 150~200ms)
+        private const val WARNING_VOICE_MAX_MS = 8000L // 음성 경고 중 포커스 최대 유지 시간 (끝나면 바로 반납)
+        private const val EMOTE_SOUND_MS = 1500L
+        private const val UTTERANCE_WARNING = "warning"
         private const val BUSY_HOLD_MS = 3000L        // 급제동 뒤 이 시간 동안 이모트를 미룬다
         private const val LANE_SHOW_MS = 5000L
         private const val MERGE_THANKS_SHOW_MS = 5000L
