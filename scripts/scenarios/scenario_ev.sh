@@ -29,6 +29,7 @@ $VC --port 8088 soc 30 >/dev/null
 for d in emulator-5554 emulator-5556; do
   $ADB -s $d install -r $APK >/dev/null
   $ADB -s $d shell pm grant --user 10 com.hyperconnect.app android.car.permission.CAR_SPEED
+  $ADB -s $d shell pm grant --user 10 com.hyperconnect.app android.permission.POST_NOTIFICATIONS
   $ADB -s $d logcat -c
 done
 echo "--- C: 판교역 충전소에서 충전 시작 (SoC 35%)"

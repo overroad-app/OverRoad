@@ -4,9 +4,12 @@ HC=$(cd "$(dirname "$0")/../.." && pwd)  # 저장소 루트
 ADB=~/Library/Android/sdk/platform-tools/adb
 APK=$HC/app/build/outputs/apk/debug/app-debug.apk
 for p in 8088 8089; do python3 -I $HC/scripts/vc.py --port $p park >/dev/null; done
+# 이전 시연의 이벤트·전송 기록을 비운다 (같은 지점을 다시 시연해도 경고가 막히지 않게)
+curl -s -X POST localhost:8080/demo -H 'Content-Type: application/json' -d '{"reset": true}' >/dev/null
 for d in emulator-5554 emulator-5556; do
   $ADB -s $d install -r $APK >/dev/null
   $ADB -s $d shell pm grant --user 10 com.hyperconnect.app android.car.permission.CAR_SPEED
+  $ADB -s $d shell pm grant --user 10 com.hyperconnect.app android.permission.POST_NOTIFICATIONS
   $ADB -s $d logcat -c
 done
 $ADB -s emulator-5554 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id B --ei lane 2 --ed offset_m 0 "$@" >/dev/null
@@ -17,5 +20,10 @@ import sys,json
 v=json.load(sys.stdin)['vehicles']
 sys.exit(0 if {'B','C'}<=set(v) and abs(v['B']['lat']-37.4127212)<2e-5 and abs((v['C']['lat']-v['B']['lat'])*111320+300)<3 else 1)" && break
   sleep 1
+done
+# NAV_FRONT="B C": 그 차량은 내비를 앞에 띄워 주행 중 화면처럼 둔다 (경고는 내비 위 상단 알림으로 보인다)
+sleep 2
+for v in ${NAV_FRONT:-}; do
+  bash $(dirname "$0")/nav_front.sh $([ "$v" = B ] && echo emulator-5554 || echo emulator-5556)
 done
 echo "B, C ready"

@@ -10,6 +10,7 @@ import java.net.URLEncoder
 data class RoadWarning(
     val type: String, val distanceM: Int, val lane: String, val reporters: Int,
     val zoneLabel: String? = null, val lengthM: Int? = null, val eventId: String? = null,
+    val tail: Boolean = false,  // 사고 정체의 꼬리에 다가옴 (2차 사고 방지 rev2)
 )
 
 /** 차로 변경 알림. [merging]이면 내가 진입하려는 쪽, 아니면 내 차로로 들어오려는 차가 있는 쪽. */
@@ -36,20 +37,34 @@ data class ChargingForecast(
 /** 내 충전이 끝남: 이 기록(시간·실측 출력)이 충전소 정보로 다른 운전자에게 쓰인다. 별점을 받을 수 있다. */
 data class ChargeDone(val station: String, val stationId: String, val minutes: Int, val kw: Int, val socFrom: Int, val socTo: Int)
 
-/** 뒤에서 접근하는 긴급차량. [passed]면 이미 지나갔다. */
-data class EmergencyApproach(val label: String, val symbol: String, val distanceM: Int, val sameLane: Boolean, val passed: Boolean)
+/** 뒤에서 접근하는 긴급차량. [role]은 police·fire·ambulance, [id]는 긴급차량 구분용. [passed]면 이미 지나갔다. */
+data class EmergencyApproach(
+    val id: String, val role: String, val label: String, val symbol: String,
+    val distanceM: Int, val sameLane: Boolean, val passed: Boolean,
+)
+
+/** 충전소 지도의 핀: 별점·혼잡과, 이 차량이 그곳으로 갈 때의 대기·완료 시각. */
+data class ChargerPin(
+    val id: String, val name: String, val lat: Double, val lon: Double, val rating: Double?, val ratingN: Int,
+    val stalls: Int, val charging: Int, val waitMin: Int?, val doneMs: Long?, val isDest: Boolean,
+)
+
+data class ChargerMap(val myLat: Double?, val myLon: Double?, val pins: List<ChargerPin>)
 
 /** 목적지: 위치·이름·남은 시간(초). 충전 대기 예측에 쓴다. */
 data class Destination(val lat: Double, val lon: Double, val name: String, val etaS: Int)
 
-/** 다른 차량이 보낸 이모트. [fromAhead]가 true면 앞차가 보냈다. 보낸 차의 ID는 알려주지 않는다. */
-data class Emote(val name: String, val symbol: String, val fromAhead: Boolean, val auto: Boolean = false)
+/** 다른 차량이 보낸 이모트. [fromAhead]가 true면 앞차가 보냈다. 보낸 차의 ID는 알려주지 않는다. [pack]은 보낸 차의 이모트 팩. */
+data class Emote(
+    val name: String, val symbol: String, val fromAhead: Boolean, val auto: Boolean = false,
+    val pack: String = "basic", val packName: String = "기본",
+)
 
 /** 차량 상태: 위치, 진행 방향°, 속도, 차로(모르면 null), 방향지시등(LEFT/RIGHT/null), 배터리·충전·목적지, 긴급차량 역할. */
 data class Fix(
     val lat: Double, val lon: Double, val heading: Double, val speedKph: Float, val lane: Int?, val turn: String?,
     val soc: Int? = null, val charging: Boolean = false, val dest: Destination? = null, val role: String? = null,
-    val autoThanks: Boolean = false,
+    val autoThanks: Boolean = false, val emotePack: String = "basic",
 )
 
 /**
@@ -180,12 +195,42 @@ class HyperConnectClient(
         }, "hc-stats").start()
     }
 
+    /** 충전소 지도 데이터를 가져온다. */
+    fun fetchChargers(onResult: (ChargerMap?) -> Unit) {
+        Thread({
+            val result = try {
+                val conn = URL("$baseUrl/chargers?vehicle=${URLEncoder.encode(vehicleId, "UTF-8")}").openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 3000
+                val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                conn.disconnect()
+                val me = o.optJSONObject("me")
+                val a = o.getJSONArray("chargers")
+                ChargerMap(me?.getDouble("lat"), me?.getDouble("lon"), List(a.length()) { i ->
+                    val c = a.getJSONObject(i)
+                    val f = c.optJSONObject("forecast")
+                    ChargerPin(
+                        id = c.getString("id"), name = c.getString("name"), lat = c.getDouble("lat"), lon = c.getDouble("lon"),
+                        rating = if (c.isNull("rating")) null else c.getDouble("rating"), ratingN = c.optInt("rating_n"),
+                        stalls = c.getInt("stalls"), charging = c.getInt("charging"),
+                        waitMin = f?.getInt("wait_min"), doneMs = f?.let { (it.getDouble("done_ts") * 1000).toLong() },
+                        isDest = c.optBoolean("is_dest"),
+                    )
+                })
+            } catch (e: Exception) {
+                Log.w(TAG, "충전소 지도 조회 실패", e)
+                null
+            }
+            onResult(result)
+        }, "hc-chargers").start()
+    }
+
     private fun Fix.toJson() = JSONObject()
         .put("vehicle", vehicleId).put("lat", lat).put("lon", lon).put("heading", heading)
         .put("speed_kph", speedKph.toDouble()).put("lane", lane ?: JSONObject.NULL)
         .put("turn", turn ?: JSONObject.NULL)
         .put("soc", soc ?: JSONObject.NULL).put("charging", charging)
-        .put("role", role ?: JSONObject.NULL).put("auto_thanks", autoThanks)
+        .put("role", role ?: JSONObject.NULL).put("auto_thanks", autoThanks).put("emote_pack", emotePack)
         .put("dest", dest?.let {
             JSONObject().put("lat", it.lat).put("lon", it.lon).put("name", it.name).put("eta_s", it.etaS)
         } ?: JSONObject.NULL)
@@ -237,7 +282,8 @@ class HyperConnectClient(
                         val o = JSONObject(line.removePrefix("data: "))
                         when (o.optString("kind")) {
                             "emote" -> onEmote(Emote(o.getString("emote"), o.getString("symbol"),
-                                o.optString("from") == "ahead", o.optBoolean("auto")))
+                                o.optString("from") == "ahead", o.optBoolean("auto"),
+                                o.optString("pack", "basic"), o.optString("pack_name", "기본")))
                             "lane" -> onLane(LaneNotice(o.optString("role") == "merging", o.getInt("distance_m"), o.optString("side")))
                             "merge_done" -> onMergeDone(o.optBoolean("auto"))
                             "charging" -> onCharging(ChargingForecast(
@@ -260,6 +306,7 @@ class HyperConnectClient(
                                 socFrom = o.getInt("soc_from"), socTo = o.getInt("soc_to"),
                             ))
                             "emergency" -> onEmergency(EmergencyApproach(
+                                id = o.optString("id", o.optString("role")), role = o.optString("role"),
                                 label = o.getString("label"), symbol = o.getString("symbol"),
                                 distanceM = o.getInt("distance_m"), sameLane = o.optString("lane") == "same",
                                 passed = o.optString("status") == "passed",
@@ -285,6 +332,7 @@ class HyperConnectClient(
             zoneLabel = o.optString("label").ifEmpty { null },
             lengthM = if (o.has("length_m")) o.optInt("length_m") else null,
             eventId = o.optString("event_id").ifEmpty { null }?.takeIf { it != "null" },
+            tail = o.optString("zone") == "tail",
         )
     }
 

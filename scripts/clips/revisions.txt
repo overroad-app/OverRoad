@@ -1,10 +1,10 @@
 # 기능별 현재 개선판 번호. 기능을 고치면 번호를 올리고 그 기능만 다시 녹화한다.
 #   기록: docs/feature_revisions.md · 영상: demo/clips/<기능>/rev<번호>/clip.mp4
-01_hard_brake_feedback 1
-02_secondary_accident 1
-03_weather 1
-04_zones 1
-05_ev_charging 2
-06_emergency 1
-07_lane_change 1
-08_consent_emote 1
+#   04_zones는 2026-11-05 02_secondary_accident rev2로 통합되어 더 녹화하지 않는다 (rev1 영상만 남음)
+01_hard_brake_feedback 2
+02_secondary_accident 2
+03_weather 2
+05_ev_charging 3
+06_emergency 2
+07_lane_change 2
+08_consent_emote 2

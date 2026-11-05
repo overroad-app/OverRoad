@@ -29,10 +29,17 @@
     <!-- 화면 뒤에서도 경고 수신을 유지하는 포그라운드 서비스 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 내비 위에 경고를 띄우는 상단 알림 (Dangerous 권한, 런타임 요청) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 주행을 시작하면 내비를 앞으로 띄우기 위해 Pleos 내비 앱을 찾는다 (패키지 공개 범위) -->
+    <queries>
+        <package android:name="ai.umos.maps.android.navigation.app" />
+    </queries>
 
     <application
         android:label="@string/app_name"
-        android:theme="@android:style/Theme.DeviceDefault"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
         android:usesCleartextTraffic="true">
 
         <!-- 회전 컨트롤러(CCP) 미지원 앱 선언. 모든 조작은 터치로 완결된다 -->

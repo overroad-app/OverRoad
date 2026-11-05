@@ -15,7 +15,9 @@
   POST /public_status                     공공 충전기 상태 입력 (환경공단 API 대체, 시연용)
   POST /demo                              시연 설정 (charge_time_scale: 충전 시간 배속)
   GET  /stats?vehicle=B                   내 기여 통계·신뢰 점수·배지
-  (서버가 1초마다 정체·사고 구간, EV 충전 대기 예측, 긴급차량 접근을 계산해 해당 차량에 보낸다)
+  GET  /chargers?vehicle=B                충전소 지도: 모든 충전소의 별점·혼잡·이 차량의 예상 완료 시각
+  GET  /feed/weather[?format=geojson]     외부 제공용 기상 위험 구간 피드 (현대차 내비·외부 서비스가 가져간다)
+  (서버가 1초마다 사고 정체 구간, 기상 구간, EV 충전 대기 예측, 긴급차량 접근을 계산해 해당 차량에 보낸다)
   GET  /status                            차량 레지스트리·최근 이벤트·경고
   GET  /dashboard                         실시간 도로 상황 대시보드
 """
@@ -34,8 +36,24 @@ VEHICLE_TTL_S = 10        # 이 시간 동안 위치 갱신이 없으면 레지�
 SAME_DIRECTION_DEG = 45   # 진행 방향 차이가 이 안이면 같은 방향 차량
 CLUSTER_RADIUS_M = 300    # 같은 지점으로 보는 거리
 REPORT_WINDOW_S = 30      # 즉시성 이벤트 합의 기간
-WEATHER_WINDOW_S = 300    # 기상 관측 합의 기간
+WEATHER_WINDOW_S = 300    # 기상 관측이 유효한 기간 (차량은 상태가 바뀔 때·주기적으로 다시 보낸다)
 WEATHER_ZONE_M = 1000     # 같은 기상 구간으로 보는 거리
+
+# 기상 확정 (rev2): "2대 합의"가 아니라 한 지역의 많은 차량이 거의 동시에 와이퍼를 켜는 순간(동시 다발)을 잡는다.
+#   min_onsets : BURST_WINDOW_S 안에 새로 켠(꺼짐 → 켜짐) 서로 다른 차량 수 (신뢰 가중)
+#   share      : 그 지역(SHARE_RADIUS_M) 참여 차량 중 지금 같은 관측을 하는 비율
+#   한 대의 세차·워셔액, 터널 출구 한두 대는 걸러지고, 실제 소나기는 지역 차량이 몇십 초 안에 함께 반응한다.
+BURST_WINDOW_S = 90
+SHARE_RADIUS_M = 500
+WEATHER_RULES = {
+    "heavy_rain": {"min_onsets": 5, "share": 0.6, "test": lambda o: o.get("rain", 0) >= 3},
+    "fog":        {"min_onsets": 5, "share": 0.6, "test": lambda o: bool(o.get("fog"))},
+    "slippery":   {"min_onsets": 3, "share": 0.5, "test": lambda o: bool(o.get("slippery"))},  # ABS·ESC 개입은 더 드물고 확실하다
+}
+WEATHER_END_SHARE = 0.3   # 확정된 구간은 관측 비율이 이 아래로 떨어지면 해제 (켜짐·꺼짐이 깜빡이지 않게 문턱을 다르게)
+WEATHER_LABELS = {"heavy_rain": "폭우", "fog": "안개", "slippery": "미끄러운 노면"}
+weather_onsets = {}       # (차량, 위험) -> 꺼짐에서 켜짐으로 바뀐 시각
+weather_zones = {}        # 구간 ID -> 확정된 기상 구간 (외부 피드로도 내보낸다)
 
 # 이벤트 종류별 전파 규칙
 #   min_reports : 확정에 필요한 서로 다른 차량 수 (프로토타입은 즉시성 이벤트 1대)
@@ -47,18 +65,21 @@ RULES = {
     "hard_brake":      {"min_reports": 1, "radius_m": 1500, "lanes": "same", "cooldown_s": 20,  "inside_m": 0},
     "stopped_vehicle": {"min_reports": 1, "radius_m": 2000, "lanes": "all",  "cooldown_s": 60,  "inside_m": 0},
     "crash":           {"min_reports": 1, "radius_m": 3000, "lanes": "all",  "cooldown_s": 120, "inside_m": 0},
-    "heavy_rain":      {"min_reports": 2, "radius_m": 5000, "lanes": "all",  "cooldown_s": 300, "inside_m": 500},
-    "fog":             {"min_reports": 2, "radius_m": 5000, "lanes": "all",  "cooldown_s": 300, "inside_m": 500},
-    "slippery":        {"min_reports": 2, "radius_m": 5000, "lanes": "all",  "cooldown_s": 300, "inside_m": 500},
+    # 기상은 min_reports 대신 WEATHER_RULES의 동시 다발 기준으로 확정한다
+    "heavy_rain":      {"min_reports": 5, "radius_m": 5000, "lanes": "all",  "cooldown_s": 300, "inside_m": 500},
+    "fog":             {"min_reports": 5, "radius_m": 5000, "lanes": "all",  "cooldown_s": 300, "inside_m": 500},
+    "slippery":        {"min_reports": 3, "radius_m": 5000, "lanes": "all",  "cooldown_s": 300, "inside_m": 500},
     "congestion":      {"min_reports": 3, "radius_m": 1000, "lanes": "all",  "cooldown_s": 120, "inside_m": 0},
 }
 
-# 정체·사고 구간 알림: 느린 차량이 촘촘히 이어진 무리를 정체로 보고, 사고 증거가 있으면 사고 구간으로 알린다
+# 사고 정체 (2차 사고 방지 rev2, 옛 04 기능을 통합): 느린 차량이 촘촘히 이어진 무리를 찾고,
+# 사고·정차 증거가 있을 때만 알린다. 2차 사고는 사고 지점보다 그 뒤 "정체 꼬리"에서 난다 → 꼬리 위치를 알린다.
+# 사고 증거가 없는 단순 정체는 알리지 않는다 (내비 실시간 교통이 이미 하는 일).
 JAM_SPEED_KPH = 30       # 이보다 느리면 정체 중인 차량
 JAM_GAP_M = 150          # 이 간격 이내로 이어져야 같은 구간
 JAM_MIN_VEHICLES = 3     # 구간으로 확정하는 최소 차량 수 (합의)
 STOPPED_KPH = 2          # 이보다 느리면 멈춘 차량
-ZONE_LABELS = {"accident": "사고 구간", "suspected": "사고·장애물 추정 구간", "jam": "정체 구간"}
+ZONE_LABELS = {"accident": "사고 정체", "suspected": "사고·장애물 추정 정체", "jam": "정체"}
 
 # EV 충전소 (rev2): 시연용 고정 목록. 실제로는 환경공단 충전소 정보 API의 위치·충전기 수·정격 출력을 쓴다
 CHARGERS = [
@@ -100,6 +121,9 @@ last_emote = {}    # vehicle_id -> 마지막 이모트 전송 시각
 
 # 이모트: 정해진 긍정·중립 표현만 허용한다 (자유 입력은 시비·보복운전에 악용될 수 있다)
 EMOTES = {"thanks": "👍", "sorry": "🙏", "hello": "👋"}
+# 이모트 팩: 같은 세 가지 표현을 팩마다 다른 소리·그림으로 전한다. 받는 쪽은 보낸 차의 팩 소리를 듣는다
+# (받아 본 소리가 구매로 이어지는 구조). 유료 팩도 주행 중에는 소리만, 판매는 Pleos 결제 SDK 출시 후.
+EMOTE_PACKS = {"basic": "기본", "retro": "레트로 8비트", "orchestra": "오케스트라"}
 EMOTE_RANGE_M = 150       # 이 거리 안의 바로 앞차·뒤차에게만 보낸다
 EMOTE_COOLDOWN_S = 5      # 한 차량이 이모트를 보낼 수 있는 최소 간격
 OTHER_LANE_PENALTY_M = 30 # 같은 거리면 같은 차로 차량을 우선한다
@@ -268,43 +292,111 @@ def handle_report(event):
 
 
 def handle_weather(obs):
-    """기상 관측: 같은 구간에서 서로 다른 차량 N대가 같은 위험을 관측하면 확정·전파한다."""
+    """기상 관측 (rev2): 차량별 최신 관측과 켜진 시각을 기록하고, 동시 다발 기준을 넘으면 기상 구간을 확정·전파한다."""
     now = time.time()
     obs["ts"] = now
     confirmed = []
     with lock:
+        prev = weather_obs.get(obs["vehicle"], {})
         weather_obs[obs["vehicle"]] = obs
-        if obs.get("rain", 0) >= 3 or obs.get("fog") or obs.get("slippery"):
-            stats[obs["vehicle"]]["reports"] += 1
-        recent = [o for o in weather_obs.values() if now - o["ts"] <= WEATHER_WINDOW_S]
-        for hazard, test in (("heavy_rain", lambda o: o.get("rain", 0) >= 3),
-                             ("fog", lambda o: o.get("fog")),
-                             ("slippery", lambda o: o.get("slippery"))):
-            if not test(obs):
-                continue
-            seen = [o for o in recent if test(o)
-                    and distance_m(o["lat"], o["lon"], obs["lat"], obs["lon"]) <= WEATHER_ZONE_M]
-            reporters = {o["vehicle"] for o in seen}
-            if not consensus_met(reporters, RULES[hazard]["min_reports"]):
-                print(f"[weather] {hazard} 관측 {len(reporters)}대 (확정 대기)", flush=True)
-                continue
-            # 관측 차량들의 중심을 위험 구간 위치로 쓴다
-            event = {
-                "type": hazard, "vehicle": obs["vehicle"],
-                "lat": sum(o["lat"] for o in seen) / len(seen),
-                "lon": sum(o["lon"] for o in seen) / len(seen),
-                "heading": obs.get("heading"), "lane": None, "ts": now,
-                "event_id": f"{hazard}-{int(now * 1000)}",
-            }
-            event_reporters[event["event_id"]] = set(reporters)
-            print(f"[weather] {hazard} 확정 ({len(reporters)}대)", flush=True)
-            notified, decisions = propagate(event, reporters, now)
-            if not any(e["type"] == hazard and now - e["ts"] < 60 for e in events):
-                events.append({**{k: event.get(k) for k in ("type", "vehicle", "lat", "lon", "lane", "ts")},
-                               "reporters": sorted(reporters), "decisions": decisions})
-                del events[:-30]
-            confirmed.append((hazard, notified))
+        for hazard, rule in WEATHER_RULES.items():
+            on, was = rule["test"](obs), rule["test"](prev) if prev else False
+            if on and not was:
+                weather_onsets[(obs["vehicle"], hazard)] = now
+                stats[obs["vehicle"]]["reports"] += 1
+            elif not on:
+                weather_onsets.pop((obs["vehicle"], hazard), None)
+            if on and not active_weather_zone(hazard, obs["lat"], obs["lon"]):
+                zone = try_confirm_weather(hazard, rule, obs, now)
+                if zone:
+                    confirmed.append((hazard, propagate_weather(zone, now)))
     return confirmed
+
+
+def active_weather_zone(hazard, lat, lon):
+    return next((z for z in weather_zones.values() if z["type"] == hazard and z["status"] == "active"
+                 and distance_m(z["lat"], z["lon"], lat, lon) <= WEATHER_ZONE_M), None)
+
+
+def weather_share(hazard, lat, lon, now):
+    """이 지점 SHARE_RADIUS_M 안 참여 차량 중 지금 이 위험을 관측하는 비율과 그 차량들."""
+    test = WEATHER_RULES[hazard]["test"]
+    near = [vid for vid, v in live_vehicles(now).items()
+            if v.get("role") not in EMERGENCY_ROLES and distance_m(v["lat"], v["lon"], lat, lon) <= SHARE_RADIUS_M]
+    seeing = [vid for vid in near if (o := weather_obs.get(vid)) and now - o["ts"] <= WEATHER_WINDOW_S and test(o)]
+    return (len(seeing) / len(near) if near else 0.0), seeing
+
+
+def try_confirm_weather(hazard, rule, obs, now):
+    """동시 다발 판단. 호출 시 lock을 잡고 있어야 한다."""
+    onset = {vid for (vid, h), ts in weather_onsets.items()
+             if h == hazard and now - ts <= BURST_WINDOW_S and (o := weather_obs.get(vid))
+             and distance_m(o["lat"], o["lon"], obs["lat"], obs["lon"]) <= WEATHER_ZONE_M}
+    if not onset:
+        return None
+    lat = sum(weather_obs[v]["lat"] for v in onset) / len(onset)
+    lon = sum(weather_obs[v]["lon"] for v in onset) / len(onset)
+    share, seeing = weather_share(hazard, lat, lon, now)
+    weight = sum(trust_weight(v) for v in onset)
+    if weight < rule["min_onsets"] - 1e-9 or share < rule["share"]:
+        print(f"[weather] {hazard} 동시 다발 대기: {BURST_WINDOW_S}초 안 새로 켠 차량 {len(onset)}대"
+              f"(필요 {rule['min_onsets']}), 지역 관측 비율 {share:.0%}(필요 {rule['share']:.0%})", flush=True)
+        return None
+    zid = f"{hazard}-{int(now * 1000)}"
+    zone = {"id": zid, "type": hazard, "label": WEATHER_LABELS[hazard], "status": "active",
+            "lat": lat, "lon": lon, "radius_m": WEATHER_ZONE_M, "heading": obs.get("heading"),
+            "confirmed_at": now, "updated_at": now, "ended_at": None,
+            "onset_vehicles": len(onset), "observing": len(seeing), "share": round(share, 2)}
+    weather_zones[zid] = zone
+    event_reporters[zid] = set(onset)
+    print(f"[weather] {hazard} 확정: {BURST_WINDOW_S}초 안 {len(onset)}대가 새로 켬, 지역 관측 비율 {share:.0%}", flush=True)
+    events.append({"type": hazard, "vehicle": obs["vehicle"], "lat": lat, "lon": lon, "lane": None, "ts": now,
+                   "reporters": sorted(onset)})
+    del events[:-30]
+    return zone
+
+
+def propagate_weather(zone, now, verbose=True):
+    event = {"type": zone["type"], "vehicle": None, "lat": zone["lat"], "lon": zone["lon"],
+             "heading": zone["heading"], "lane": None, "ts": now, "event_id": zone["id"], "zone_key": zone["id"]}
+    notified, _ = propagate(event, set(event_reporters.get(zone["id"], ())), now, verbose=verbose)
+    return notified
+
+
+def weather_loop(now):
+    """확정된 기상 구간을 갱신한다: 관측 비율이 떨어지면 해제하고, 새로 다가오는 차량에도 알린다."""
+    for z in list(weather_zones.values()):
+        if z["status"] != "active":
+            if now - z["ended_at"] > 1800:
+                del weather_zones[z["id"]]
+            continue
+        share, seeing = weather_share(z["type"], z["lat"], z["lon"], now)
+        z.update(updated_at=now, observing=len(seeing), share=round(share, 2))
+        if share < WEATHER_END_SHARE:
+            z.update(status="ended", ended_at=now)
+            print(f"[weather] {z['type']} 구간 해제 (관측 비율 {share:.0%})", flush=True)
+            continue
+        notified = propagate_weather(z, now, verbose=False)
+        if notified:
+            print(f"[weather] {z['label']} 구간 → {notified}", flush=True)
+
+
+def weather_feed(fmt=None):
+    """외부 제공용 기상 위험 피드. 차량 ID·개별 위치는 담지 않고 구간 단위로만 내보낸다."""
+    with lock:
+        zones = [dict(z) for z in weather_zones.values()]
+    now = time.time()
+    items = [{"id": z["id"], "hazard": z["type"], "label": z["label"], "status": z["status"],
+              "lat": round(z["lat"], 5), "lon": round(z["lon"], 5), "radius_m": z["radius_m"],
+              "confirmed_at": round(z["confirmed_at"]), "updated_at": round(z["updated_at"]),
+              "ended_at": z["ended_at"] and round(z["ended_at"]),
+              "observing_vehicles": z["observing"], "observing_share": z["share"],
+              "basis": "vehicle_signals_burst"} for z in zones]
+    if fmt == "geojson":
+        return {"type": "FeatureCollection", "generated_at": round(now), "features": [
+            {"type": "Feature", "id": i["id"], "geometry": {"type": "Point", "coordinates": [i["lon"], i["lat"]]},
+             "properties": {k: v for k, v in i.items() if k not in ("lat", "lon", "id")}} for i in items]}
+    return {"source": "HyperConnect", "generated_at": round(now), "zones": items}
 
 
 # ---------- HTTP ----------
@@ -343,9 +435,10 @@ def handle_emote(body):
 
 
 def deliver_emote(sender, receiver, emote, from_side, now, auto=False):
-    """이모트 하나를 전달하고 기록한다. 호출 시 lock을 잡고 있어야 한다."""
+    """이모트 하나를 전달하고 기록한다. 보낸 차의 팩으로 들린다. 호출 시 lock을 잡고 있어야 한다."""
+    pack = (vehicles.get(sender) or {}).get("emote_pack") or "basic"
     push(receiver, {"kind": "emote", "type": "emote", "emote": emote, "symbol": EMOTES[emote],
-                    "from": from_side, "auto": auto, "ts": now})
+                    "pack": pack, "pack_name": EMOTE_PACKS[pack], "from": from_side, "auto": auto, "ts": now})
     stats[receiver]["emotes"][emote] += 1
     emotes.append({"from": sender, "to": receiver, "emote": emote, "auto": auto, "ts": now})
     del emotes[:-20]
@@ -373,6 +466,8 @@ def forget(vid):
     with lock:
         removed = [name for name, table in (("위치", vehicles), ("기상 관측", weather_obs), ("통계", stats),
                                             ("차로 변경", lane_intents)) if table.pop(vid, None) is not None]
+        for key in [k for k in weather_onsets if k[0] == vid]:
+            del weather_onsets[key]
     print(f"[forget] {vid} 데이터 삭제: {', '.join(removed) or '없음'}", flush=True)
     return {"ok": True, "removed": removed}
 
@@ -611,6 +706,31 @@ def charger_of(dest):
                  if distance_m(dest["lat"], dest["lon"], c["lat"], c["lon"]) <= CHARGER_RADIUS_M), None)
 
 
+def charger_map(vid):
+    """충전소 지도 (EV rev3): 모든 충전소의 위치·별점·혼잡과, 이 차량이 그곳으로 갈 때의 예상 완료 시각."""
+    now = time.time()
+    with lock:
+        live = live_vehicles(now)
+        me = live.get(vid) if vid else None
+        dest = charger_of(me.get("dest")) if me else None
+        out = []
+        for c in CHARGERS:
+            extra = None
+            if me:
+                km = distance_m(me["lat"], me["lon"], c["lat"], c["lon"]) / 1000 * ROAD_FACTOR
+                eta = (me["dest"].get("eta_s") if dest is c and me.get("dest") else None) or km / 40 * 3600
+                extra = (vid, eta, soc_on_arrival(me, c))
+            s = charger_state(c, live, now, extra)
+            f = s["forecast"].get(vid) if vid else None
+            out.append({"id": c["id"], "name": c["name"], "lat": c["lat"], "lon": c["lon"], "stalls": c["stalls"],
+                        "rating": s["rating"], "rating_n": s["rating_n"], "kw": s["kw"], "kw_measured": s["kw_measured"],
+                        "charging": s["charging"], "waiting": s["waiting"], "coming": s["coming"],
+                        "is_dest": dest is c,
+                        "forecast": f and {"wait_min": round(f["wait_s"] / 60), "ahead": f["ahead"],
+                                           "eta_ts": now + f["eta_s"], "done_ts": f["done_ts"]}})
+        return {"me": me and {"lat": me["lat"], "lon": me["lon"], "heading": me["heading"]}, "chargers": out}
+
+
 current_zones = []     # 대시보드용
 current_chargers = []  # 대시보드용
 charging_sent = {}     # vehicle_id -> 마지막으로 보낸 충전 예측 (바뀔 때만 다시 보낸다)
@@ -619,6 +739,8 @@ emergency_sent = {}    # (긴급차량, 차량) -> 마지막 전송 시각
 
 def zone_notices(now):
     for z in current_zones:
+        if z["kind"] == "jam":
+            continue  # 사고 증거가 없는 단순 정체는 내비 몫
         event = {
             "type": "congestion", "lat": z["tail_lat"], "lon": z["tail_lon"], "heading": z["heading"], "lane": None,
             "zone": z["kind"], "label": z["label"], "length_m": z["length_m"],
@@ -687,7 +809,7 @@ def emergency_yield(now):
                 continue
             behind = -relative(v, em["lat"], em["lon"])[0]  # 긴급차량이 내 뒤 몇 m에 있는가
             key = (em_id, vid)
-            item = {"kind": "emergency", "type": "emergency", "role": role, "label": label, "symbol": symbol,
+            item = {"kind": "emergency", "type": "emergency", "id": em_id, "role": role, "label": label, "symbol": symbol,
                     "distance_m": round(behind), "lane": lane_relation(v.get("lane"), em.get("lane")), "ts": now}
             if 0 < behind <= EMERGENCY_RANGE_M:
                 if now - emergency_sent.get(key, 0) >= EMERGENCY_UPDATE_S:
@@ -710,18 +832,25 @@ def close_alerts(now):
     for e in events:
         if e["type"] not in ("crash", "stopped_vehicle") or now - e["ts"] > 600:
             continue
+        # 사고로 정체가 생겼으면 위험 지점은 사고 지점이 아니라 정체 꼬리다 (2차 사고 방지 rev2)
+        zone = next((z for z in current_zones if z["kind"] != "jam"
+                     and -50 <= relative({"lat": z["tail_lat"], "lon": z["tail_lon"], "heading": z["heading"]},
+                                         e["lat"], e["lon"])[0] <= z["length_m"] + 300), None)
+        lat, lon = (zone["tail_lat"], zone["tail_lon"]) if zone else (e["lat"], e["lon"])
         for vid, v in live.items():
-            key = (vid, e["ts"])
-            if vid == e["vehicle"] or key in close_sent:
+            # 같은 정체에 사고 보고가 여러 건이어도 꼬리 경고는 한 번
+            key = (vid, ("zone", zone["head"]) if zone else e["ts"])
+            if vid == e["vehicle"] or key in close_sent or (zone and vid in zone["members"]):
                 continue
-            along, _ = relative(v, e["lat"], e["lon"])
+            along, _ = relative(v, lat, lon)
             if 0 < along <= CLOSE_ALERT_M:
                 close_sent.add(key)
                 item = {"type": e["type"], "distance_m": round(along),
-                        "lane": lane_relation(v.get("lane"), e.get("lane")), "reporters": 1, "ts": now}
+                        "lane": lane_relation(v.get("lane"), e.get("lane")), "reporters": 1, "ts": now,
+                        **({"zone": "tail", "length_m": zone["length_m"]} if zone else {})}
                 if push(vid, item):
                     alerts.append({"to": vid, **item})
-                    print(f"[close] {vid}: {e['type']} {round(along)}m", flush=True)
+                    print(f"[close] {vid}: {e['type']} {'정체 꼬리 ' if zone else ''}{round(along)}m", flush=True)
 
 
 def lane_changes(now):
@@ -792,6 +921,7 @@ def road_loop():
         with lock:
             current_zones = detect_zones(now)
             zone_notices(now)
+            weather_loop(now)
             charging_forecasts(now)
             emergency_yield(now)
             close_alerts(now)
@@ -836,6 +966,7 @@ class Handler(BaseHTTPRequestHandler):
                     "zones": current_zones,
                     "chargers": [{**s, **next(c for c in CHARGERS if c["id"] == s["id"])} for s in current_chargers],
                     "weather": [o for o in weather_obs.values() if now - o["ts"] <= WEATHER_WINDOW_S],
+                    "weather_zones": list(weather_zones.values()),
                 }
             self._json(200, body)
         elif url.path == "/stats":
@@ -843,6 +974,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "vehicle required"})
             else:
                 self._json(200, vehicle_stats(q["vehicle"]))
+        elif url.path == "/chargers":
+            self._json(200, charger_map(q.get("vehicle")))
+        elif url.path == "/feed/weather":
+            self._json(200, weather_feed(q.get("format")))
         elif url.path == "/dashboard":
             self._send(200, DASHBOARD.read_bytes(), "text/html; charset=utf-8")
         else:
@@ -891,7 +1026,9 @@ class Handler(BaseHTTPRequestHandler):
                     "lat": body["lat"], "lon": body["lon"], "heading": body["heading"],
                     "speed_kph": body.get("speed_kph"), "lane": body.get("lane"), "turn": body.get("turn"),
                     "role": body.get("role"), "soc": body.get("soc"), "charging": body.get("charging"),
-                    "dest": body.get("dest"), "auto_thanks": body.get("auto_thanks", False), "ts": time.time(),
+                    "dest": body.get("dest"), "auto_thanks": body.get("auto_thanks", False),
+                    "emote_pack": body.get("emote_pack") if body.get("emote_pack") in EMOTE_PACKS else "basic",
+                    "ts": time.time(),
                 }
             self._json(200, {"ok": True})
         elif path == "/emote":
@@ -903,6 +1040,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/public_status":
             self._json(200, handle_public_status(body))
         elif path == "/demo":
+            if body.pop("reset", False):  # 시연을 다시 시작할 때: 이벤트·전송 기록을 비운다 (같은 지점 재시연이 '최근 전송함'에 막히지 않게)
+                with lock:
+                    for table in (events, alerts, reports, sent, close_sent, weather_zones, weather_onsets, weather_obs):
+                        table.clear()
+                print("[demo] 이벤트·전송 기록 초기화", flush=True)
             demo.update({k: float(v) for k, v in body.items() if k in demo})
             print(f"[demo] {demo}", flush=True)
             self._json(200, demo)
