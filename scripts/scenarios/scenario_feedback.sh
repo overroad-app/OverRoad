@@ -1,8 +1,9 @@
 #!/bin/bash
-# 경고 피드백 → 신뢰 점수 → 내 기여 화면 시나리오
-#   1) B 급제동 → C에 경고 + "맞았어요/아니었어요" → C가 "맞았어요" → B 신뢰도·통계 반영
-#   2) B 정차 상태에서 ⚙ 설정 열기 → 내 기여 화면 캡처
-#   3) B와 멀리 떨어진 가상 차량 R이 급제동 보고 → X, Y, Z가 "아니었어요" → R의 다음 단독 보고는 "신뢰 합의 부족"
+# 급제동 경고 시나리오 (모두 주행 중): B·C가 같은 2차로를 80km/h로 달린다. C는 B 뒤 200m.
+#   1) B 급제동(80 → 20km/h) → 10초 안에 닿는 같은 차로 뒤차 C에만 경고 (OS 상단 알림: 브레이크등 아이콘 + 초록 체크)
+#      800m 뒤를 같이 달리는 E는 도달 거리 밖이라 받지 않는다
+#   2) B는 위험을 피한 뒤 다시 60km/h로, C는 경고를 듣고 50km/h로 줄였다가 다시 주행 (아무도 멈추지 않는다)
+#   보고 기록은 서버 /stats의 history로 확인 (설정의 '내 기여'에 같은 내용이 보인다)
 # 사용: scenario_feedback.sh <서버 로그 파일>
 S=$(cd "$(dirname "$0")" && pwd)
 HC=$(cd "$S/../.." && pwd)
@@ -10,44 +11,26 @@ ADB=~/Library/Android/sdk/platform-tools/adb
 SL=$1
 SHOT=${TMPDIR:-/tmp}/hyperconnect
 mkdir -p "$SHOT"
-FLEET="python3 -I $HC/scripts/fleet.py"
+VC="python3 -I $HC/scripts/vc.py"
 
 bash $S/stop_fleet.sh
-bash $S/launch_bc.sh
-$FLEET run --anchor B R:2:+1500:0 X:2:+1440:0 Y:2:+1380:0 Z:2:+1320:0 > "$SHOT/fleet.log" 2>&1 &
+NAV_FRONT="B C" C_GAP=200 bash $S/launch_bc.sh
+curl -s -X POST localhost:8080/demo -H 'Content-Type: application/json' -d '{"reset": true, "reset_stats": true}' >/dev/null
+python3 -I $HC/scripts/fleet.py run --anchor B E:2:-800:80 > "$SHOT/fleet.log" 2>&1 &
+$VC --port 8089 drive 80 >/dev/null
 sleep 3
 N=$(wc -l < $SL)
 
-echo "--- 1) B 급제동"
-bash $HC/scripts/hard_brake.sh >/dev/null
-# 피드백 질문은 경고 카드가 사라진 뒤(정차·저속, 위험 순간 아님)에 나온다
-for i in $(seq 1 20); do
-  $ADB -s emulator-5556 shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
-  $ADB -s emulator-5556 exec-out cat /sdcard/ui.xml | grep -q "맞았어요" && break
-  sleep 1
-done
-echo "피드백 질문 표시까지 약 ${i}초"
-$ADB -s emulator-5556 exec-out screencap -p > "$SHOT/feedback_c.png"
-bash $S/tap.sh emulator-5556 "맞았어요"
-sleep 1
-echo "B 통계: $(curl -s 'localhost:8080/stats?vehicle=B')"
-
-echo "--- 2) B 설정 화면"
-sleep 2
-bash $S/tap.sh emulator-5554 "⚙"
-sleep 2
-$ADB -s emulator-5554 exec-out screencap -p > "$SHOT/settings_b.png"
-bash $S/tap.sh emulator-5554 "닫기"
-
-echo "--- 3) 신뢰 낮은 보고 차량"
-$FLEET report R hard_brake
-sleep 1
-for v in X Y Z; do $FLEET feedback $v wrong; done
-echo "R 통계: $(curl -s 'localhost:8080/stats?vehicle=R')"
-sleep 1
-echo "R 다시 단독 보고:"
-$FLEET report R hard_brake
-
-echo "== server"; tail -n +$((N+1)) $SL | grep -E 'feedback|신뢰|hard_brake|급제동' | head -20
-echo "== C"; $ADB -s emulator-5556 logcat -d | grep -E '경고|피드백' | tail -5
+echo "--- B 급제동 (주행 중)"
+bash $HC/scripts/hard_brake.sh >/dev/null &
+HB=$!
+bash $S/wait_log.sh emulator-5556 "경고 수신" 25; bash $S/mark.sh in -1
+for v in 70 60 50; do $VC --port 8089 drive $v >/dev/null; sleep 0.6; done   # C는 경고를 듣고 속도를 줄인다
+sleep 3; bash $S/mark.sh out
+$ADB -s emulator-5556 exec-out screencap -p > "$SHOT/hard_brake_c.png"
+wait $HB   # 급제동 스크립트만 기다린다 (가상 차량 시뮬레이터는 계속 돈다)
+$VC --port 8089 drive 60 >/dev/null
+echo "B 보고 기록: $(curl -s 'localhost:8080/stats?vehicle=B' | python3 -c 'import sys,json; print(json.load(sys.stdin)["history"])')"
+echo "== server"; tail -n +$((N+1)) $SL | grep -E 'hard_brake|급제동|    E:|    C:' | head -8
+echo "== C"; $ADB -s emulator-5556 logcat -d | grep -E '경고 수신' | tail -2
 bash $S/stop_fleet.sh

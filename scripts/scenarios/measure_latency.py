@@ -8,6 +8,7 @@
 
   python3 scripts/scenarios/measure_latency.py [회차 수, 기본 10] [결과 md 경로]
 """
+import os
 import re
 import subprocess
 import sys
@@ -44,6 +45,7 @@ def log_time(dev, pattern):
 
 
 def run_once():
+    os.environ["C_GAP"] = "90"  # 급제동은 정차 차량에 최소 100m 안에서만 간다
     sh("bash", str(HC / "scripts/scenarios/launch_bc.sh"))
     time.sleep(2)
     offs = {dev: clock_offset(dev) for dev in (B, C)}

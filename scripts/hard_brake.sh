@@ -1,6 +1,6 @@
 #!/bin/bash
 # Virtual Console API로 차량 A의 급제동을 재현한다.
-#   D 기어 → 80km/h까지 가속 → 브레이크를 밟고 약 1.5초 만에 20km/h로 감속
+#   D 기어 → 80km/h까지 가속 → 브레이크를 밟고 약 1.5초 만에 20km/h로 감속 → 위험을 피한 뒤 다시 60km/h로 주행 (멈추지 않는다)
 # 사용법: scripts/hard_brake.sh [Virtual Console 주소, 기본 http://127.0.0.1:8088]
 set -euo pipefail
 VC=${1:-http://127.0.0.1:8088}
@@ -25,6 +25,6 @@ echo "T0 $(perl -MTime::HiRes=time -e 'printf "%.3f", time')"  # 지연시간 �
 for v in 72 62 52 42 32 22 20; do controls "$v" 0 90; sleep 0.2; done
 sleep 1
 
-echo "정차"
-for v in 15 10 5 0; do controls "$v" 0 60; sleep 0.3; done
+echo "다시 가속: 60km/h로 주행 계속"
+for v in 25 30 35 40 45 50 55 60; do controls "$v" 30 0; sleep 0.4; done
 echo "완료"

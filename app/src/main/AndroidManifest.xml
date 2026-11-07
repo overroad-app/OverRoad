@@ -59,6 +59,7 @@
         <!-- Pleos 멀티 윈도우에서 창 크기·방향이 바뀌어도 화면을 다시 만들지 않는다 (연결·상태 유지) -->
         <activity
             android:name=".MainActivity"
+            android:theme="@style/Theme.HyperConnect.Floating"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode|keyboard|keyboardHidden|navigation"
             android:exported="true">
             <intent-filter>

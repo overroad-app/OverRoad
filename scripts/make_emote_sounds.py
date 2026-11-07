@@ -7,6 +7,13 @@
 이모트 팩 (같은 세 표현을 팩마다 다른 소리로):
   retro     : 사각파 8비트 — 올라가는 아르페지오 / 미끄러져 내려가는 음 / 두 번 깜빡이는 블립
   orchestra : 현악 화음이 부풀어 오르는 장화음 / 첼로 두 음 단조 / 첼레스타 아르페지오
+  electric  : (현대차 오리지널 · 차종 사운드) 부드러운 FM 전자음이 올라가는 화음 / 내려가는 글라이드 / 두 번 핑
+  launch    : (특별 지급 · 출고 기념) 반짝이는 벨 아르페지오
+  best      : (특별 지급 · 베스트 드라이버) 금빛 차임 화음
+  emergency : (특별 지급 · 긴급차량 전용) 길을 열어 준 차에게 보내는 따뜻한 감사 — 사이렌처럼 두 음이 번갈아 울리지 않게
+  gugak     : (창작마당 예시) 가야금 같은 뜯는 소리, 평조 5음 + 농현(음 끝을 흔듦)
+  marimba   : (창작마당 예시) 나무 건반 마림바
+모든 소리는 1.5초 이하, 사이렌·경적·차량 경고음과 닮지 않게 만든다 (창작마당 심사 기준과 같다).
 
   python3 scripts/make_emote_sounds.py   # app/src/main/res/raw/emote_*.wav 생성
 """
@@ -156,11 +163,84 @@ def orchestra_hello():
     return normalize(y, peak=0.6)
 
 
+# ---------- 상점 팩 (2026-11-08) ----------
+
+def pluck(midi, dur, bend=0.0):
+    """가야금 같은 뜯는 소리 (Karplus-Strong). bend는 끝에서 음을 흔드는 정도(반음 단위)."""
+    n = int(SR * dur)
+    f = note(midi)
+    period = int(SR / f)
+    rng = np.random.default_rng(midi)
+    buf = rng.uniform(-1, 1, period)
+    y = np.zeros(n)
+    for i in range(n):
+        y[i] = buf[i % period]
+        buf[i % period] = 0.5 * (buf[i % period] + buf[(i + 1) % period]) * 0.996
+    if bend:
+        t = np.arange(n) / SR
+        shift = bend * np.clip((t - dur * 0.35) / (dur * 0.6), 0, 1) * np.sin(2 * np.pi * 5 * t)
+        idx = np.clip(np.arange(n) * (2 ** (shift / 12)), 0, n - 1)
+        y = np.interp(idx, np.arange(n), y)
+    return soften(y, 4000) * envelope(n, 0.002, 0.06)
+
+
+def marimba(midi, dur):
+    t = np.arange(int(SR * dur)) / SR
+    f = note(midi)
+    x = np.sin(2 * np.pi * f * t) * np.exp(-t * 7) + 0.25 * np.sin(2 * np.pi * 4 * f * t) * np.exp(-t * 30)
+    return x * envelope(len(t), 0.002, 0.03)
+
+
+def fm(midi, dur, glide_to=None, index=1.5):
+    n = int(SR * dur)
+    t = np.arange(n) / SR
+    f = np.linspace(note(midi), note(glide_to) if glide_to else note(midi), n)
+    phase = np.cumsum(f / SR)
+    mod = index * np.exp(-t * 4) * np.sin(2 * np.pi * 2 * phase)
+    return np.sin(2 * np.pi * phase + mod) * envelope(n, 0.02, dur * 0.4)
+
+
+def bell(midi, dur):
+    t = np.arange(int(SR * dur)) / SR
+    f = note(midi)
+    x = sum(a * np.sin(2 * np.pi * f * r * t) * np.exp(-t * d) for r, a, d in ((1, 1, 4), (2.76, 0.4, 7), (5.4, 0.2, 12)))
+    return x * envelope(len(t), 0.002, 0.04)
+
+
+def seq(parts):
+    return np.concatenate(parts)
+
+
+SHOP_PACKS = {
+    "electric_thanks": lambda: normalize(seq([fm(m, 0.12) for m in (64, 68, 71)] + [fm(76, 0.5)]), 0.55),
+    "electric_sorry": lambda: normalize(fm(71, 0.6, glide_to=64, index=0.8), 0.55),
+    "electric_hello": lambda: normalize(seq([fm(79, 0.14, index=2), np.zeros(int(SR * 0.05)), fm(83, 0.3, index=2)]), 0.5),
+    "launch_thanks": lambda: normalize(seq([bell(m, 0.1) for m in (72, 76, 79, 84)] + [bell(88, 0.6)]), 0.55),
+    "launch_sorry": lambda: normalize(seq([bell(76, 0.25), bell(72, 0.5)]), 0.5),
+    "launch_hello": lambda: normalize(seq([bell(84, 0.12), bell(88, 0.45)]), 0.5),
+    "best_thanks": lambda: normalize(strings((67, 71, 74, 79), 0.6, 0.05) + 0.6 * np.pad(seq([bell(m, 0.12) for m in (86, 91)]), (0, int(SR * 0.6) - int(SR * 0.24))), 0.65),
+    "best_sorry": lambda: normalize(strings((62, 67), 0.7, 0.08), 0.6),
+    "best_hello": lambda: normalize(seq([bell(79, 0.12), bell(86, 0.5)]), 0.55),
+    "emergency_thanks": lambda: normalize(strings((60, 64, 67), 0.9, 0.12) + 0.5 * np.pad(seq([celesta(m, 0.2) for m in (72, 76, 79)]), (0, int(SR * 0.9) - int(SR * 0.6))), 0.65),
+    "gugak_thanks": lambda: normalize(seq([pluck(m, 0.16) for m in (67, 69, 72)] + [pluck(74, 0.7, bend=0.6)]), 0.7),
+    "gugak_sorry": lambda: normalize(seq([pluck(69, 0.3, bend=0.4), pluck(64, 0.6, bend=0.8)]), 0.7),
+    "gugak_hello": lambda: normalize(seq([pluck(72, 0.14), pluck(74, 0.5)]), 0.7),
+    "marimba_thanks": lambda: normalize(seq([marimba(m, 0.12) for m in (72, 76, 79)] + [marimba(84, 0.45)]), 0.6),
+    "marimba_sorry": lambda: normalize(seq([marimba(76, 0.22), marimba(72, 0.45)]), 0.6),
+    "marimba_hello": lambda: normalize(seq([marimba(79, 0.1), marimba(79, 0.1), marimba(84, 0.4)]), 0.6),
+}
+
+
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     for name, data in (("retro_thanks", retro_thanks()), ("retro_sorry", retro_sorry()), ("retro_hello", retro_hello()),
                        ("orchestra_thanks", orchestra_thanks()), ("orchestra_sorry", orchestra_sorry()),
                        ("orchestra_hello", orchestra_hello())):
+        wavfile.write(OUT / f"emote_{name}.wav", SR, data)
+        print(OUT / f"emote_{name}.wav", f"{len(data) / SR:.2f}s")
+    for name, make in SHOP_PACKS.items():
+        data = make()
+        assert len(data) / SR <= 1.5, name
         wavfile.write(OUT / f"emote_{name}.wav", SR, data)
         print(OUT / f"emote_{name}.wav", f"{len(data) / SR:.2f}s")
     for name, data in (("thanks", eung()), ("sorry", hum_down()), ("hello", chime_up())):

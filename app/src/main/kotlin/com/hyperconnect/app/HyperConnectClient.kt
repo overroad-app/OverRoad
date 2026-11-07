@@ -19,8 +19,11 @@ data class LaneNotice(val merging: Boolean, val distanceM: Int, val side: String
 /** 내 기여 통계 (설정 화면). */
 data class MyStats(
     val reports: Int, val helped: Int, val thanks: Int, val sorry: Int, val hello: Int,
-    val accuracy: Int?, val topPct: Int?, val badges: List<String>,
+    val topPct: Int?, val badges: List<String>, val history: List<ReportRecord>,
 )
+
+/** 내 보고 한 건: 언제, 무엇을 보고해 몇 대에게 전달됐는지. */
+data class ReportRecord(val atMs: Long, val type: String, val notified: Int)
 
 /**
  * 목적지 충전소 예측 (rev2): 도착 순번([ahead]+1)·대기·충전 시작/완료 시각과 충전소 정보(실측 출력, 별점).
@@ -32,6 +35,7 @@ data class ChargingForecast(
     val ahead: Int, val waitMin: Int, val chargeMin: Int, val etaMs: Long, val startMs: Long, val doneMs: Long,
     val stalls: Int, val chargingNetwork: Int, val chargingOther: Int, val expectedOther: Int, val coming: Int,
     val altName: String?, val altWaitMin: Int?, val altDoneMs: Long?,
+    val operator: String? = null, val free: Int = 0, val socArrival: Int? = null, val known: Int = 0, val estimated: Int = 0,
 )
 
 /** 내 충전이 끝남: 이 기록(시간·실측 출력)이 충전소 정보로 다른 운전자에게 쓰인다. 별점을 받을 수 있다. */
@@ -71,6 +75,9 @@ data class Fix(
  * HyperConnect 서버 연결: 위치 갱신·이벤트 보고·이모트 전송(POST)과 경고·이모트 구독(SSE).
  * 구독은 끊기면 자동으로 다시 연결한다.
  */
+/** 세부 정보 화면에 보여 줄 주변 상황 (문구는 서버가 만든다). */
+data class NearbyInfo(val weather: List<String>, val accidents: List<String>, val emergency: List<String>, val connected: Int)
+
 class HyperConnectClient(
     private val baseUrl: String,
     private val vehicleId: String,
@@ -146,16 +153,6 @@ class HyperConnectClient(
     }
 
     /** 받은 경고가 맞았는지 알린다 (보고한 차량의 신뢰 점수에 반영). */
-    fun sendFeedback(eventId: String, correct: Boolean) {
-        Thread({
-            try {
-                post("/feedback", JSONObject().put("vehicle", vehicleId).put("event_id", eventId).put("correct", correct))
-            } catch (e: Exception) {
-                Log.w(TAG, "피드백 전송 실패", e)
-            }
-        }, "hc-feedback").start()
-    }
-
     /** 데이터 공유 동의 철회: 서버에 이 차량의 데이터를 지우도록 요청한다. */
     fun forget(onDone: (Boolean) -> Unit) {
         Thread({
@@ -171,6 +168,74 @@ class HyperConnectClient(
     }
 
     /** 내 기여 통계를 가져온다. */
+    /** 주변 차량 시각화용 상대 위치 (전체 화면이 보일 때만 1초마다 부른다). */
+    fun fetchSurroundings(onResult: (Surroundings?) -> Unit) {
+        Thread({
+            val result = try {
+                val conn = URL("$baseUrl/surroundings?vehicle=${URLEncoder.encode(vehicleId, "UTF-8")}").openConnection() as HttpURLConnection
+                conn.connectTimeout = 2000
+                conn.readTimeout = 2000
+                val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                conn.disconnect()
+                val me = o.optJSONObject("me")
+                if (me == null) null else {
+                    val a = o.getJSONArray("vehicles")
+                    Surroundings(
+                        myLane = if (me.isNull("lane")) null else me.getInt("lane"), mySpeedKph = me.optDouble("speed_kph", 0.0),
+                        myDecel = me.optBoolean("decel"),
+                        cars = List(a.length()) { i ->
+                            a.getJSONObject(i).let { v ->
+                                SurroundCar(v.getInt("key"), v.getDouble("along"), v.getDouble("cross"),
+                                    if (v.isNull("lane")) null else v.getInt("lane"), v.optDouble("speed_kph", 0.0),
+                                    v.optString("turn").takeIf { it == "LEFT" || it == "RIGHT" },
+                                    v.optString("role").takeIf { it.isNotEmpty() && it != "null" }, v.optBoolean("braking"),
+                                    v.optBoolean("decel"))
+                            }
+                        },
+                        connected = o.optInt("connected"), aheadM = o.optDouble("ahead_m", 200.0),
+                        behindM = o.optDouble("behind_m", 86.0), errorM = o.optDouble("error_m", 5.0),
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "주변 차량 조회 실패", e)
+                null
+            }
+            onResult(result)
+        }, "hc-surround").start()
+    }
+
+    /** 이모트 상점: 장착 중인 팩과 가진 팩. */
+    fun fetchStore(onResult: (StoreInfo?) -> Unit) {
+        Thread({
+            val result = try {
+                val conn = URL("$baseUrl/store?vehicle=${URLEncoder.encode(vehicleId, "UTF-8")}").openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 3000
+                val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                conn.disconnect()
+                val a = o.getJSONArray("packs")
+                StoreInfo(o.optString("equipped", "basic"),
+                    (0 until a.length()).map { a.getJSONObject(it) }.filter { it.optBoolean("owned") }.map { it.getString("id") }.toSet())
+            } catch (e: Exception) {
+                Log.w(TAG, "상점 조회 실패", e)
+                null
+            }
+            onResult(result)
+        }, "hc-store").start()
+    }
+
+    /** 구매 요청: 지금은 서버가 "결제 SDK 출시 후" 안내를 돌려준다. */
+    fun buyPack(id: String, onResult: (String) -> Unit) {
+        Thread({
+            val msg = try {
+                JSONObject(post("/store/buy", JSONObject().put("vehicle", vehicleId).put("pack", id))).optString("reason", "구매했어요")
+            } catch (e: Exception) {
+                "지금은 구매할 수 없어요"
+            }
+            onResult(msg)
+        }, "hc-buy").start()
+    }
+
     fun fetchStats(onResult: (MyStats?) -> Unit) {
         Thread({
             val result = try {
@@ -183,9 +248,13 @@ class HyperConnectClient(
                 MyStats(
                     reports = o.getInt("reports"), helped = o.getInt("helped"),
                     thanks = e.optInt("thanks"), sorry = e.optInt("sorry"), hello = e.optInt("hello"),
-                    accuracy = if (o.isNull("accuracy")) null else o.getInt("accuracy"),
                     topPct = if (o.isNull("top_pct")) null else o.getInt("top_pct"),
                     badges = o.getJSONArray("badges").let { a -> List(a.length()) { a.getString(it) } },
+                    history = o.optJSONArray("history")?.let { a ->
+                        List(a.length()) { i ->
+                            a.getJSONObject(i).let { v -> ReportRecord((v.getDouble("ts") * 1000).toLong(), v.getString("type"), v.getInt("notified")) }
+                        }
+                    } ?: emptyList(),
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "통계 조회 실패", e)
@@ -196,6 +265,25 @@ class HyperConnectClient(
     }
 
     /** 충전소 지도 데이터를 가져온다. */
+    /** 세부 정보 화면: 내 주변의 기상·사고·긴급차량·연결 차량 수. 창을 키웠을 때만 묻는다. */
+    fun fetchNearby(onResult: (NearbyInfo?) -> Unit) {
+        Thread({
+            val result = try {
+                val conn = URL("$baseUrl/nearby?vehicle=${URLEncoder.encode(vehicleId, "UTF-8")}").openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 3000
+                val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                conn.disconnect()
+                fun strings(k: String) = o.getJSONArray(k).let { a -> List(a.length()) { a.getString(it) } }
+                NearbyInfo(strings("weather"), strings("accidents"), strings("emergency"), o.getInt("connected"))
+            } catch (e: Exception) {
+                Log.w(TAG, "주변 정보 조회 실패", e)
+                null
+            }
+            onResult(result)
+        }, "nearby").start()
+    }
+
     fun fetchChargers(onResult: (ChargerMap?) -> Unit) {
         Thread({
             val result = try {
@@ -299,6 +387,9 @@ class HyperConnectClient(
                                 altName = o.optJSONObject("alt")?.optString("name"),
                                 altWaitMin = o.optJSONObject("alt")?.optInt("wait_min"),
                                 altDoneMs = o.optJSONObject("alt")?.let { (it.getDouble("done_ts") * 1000).toLong() },
+                                operator = o.optString("operator").takeIf { it.isNotEmpty() && it != "null" },
+                                free = o.optInt("free"), socArrival = if (o.isNull("soc_arrival")) null else o.optInt("soc_arrival"),
+                                known = o.optInt("known"), estimated = o.optInt("estimated"),
                             ))
                             "charge_done" -> onChargeDone(ChargeDone(
                                 station = o.getString("station"), stationId = o.getString("station_id"),

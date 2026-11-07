@@ -1,6 +1,6 @@
 #!/bin/bash
 # 차로 변경 시나리오: B(2차로)가 왼쪽 깜빡이를 켜고 1차로로 진입한다. C는 1차로 B 뒤 30m에서 더 빠르게 다가온다.
-#   기대: B "왼쪽 차로 뒤 Xm 접근 · 진입 주의", C "옆 차량이 내 차로로 진입하려 해요"
+#   기대: B "차로 변경 주의 · 왼쪽 차로 뒤 Xm 차량 접근", C "옆 차 합류 예정 · 오른쪽 옆 차가 내 차로로 들어오려 해요"
 #         진입 성공 → 자동 감사 인사 → C는 주행 중이라 소리만, 정차하면 "주행 중 받은 이모트 👍"
 #   제외 확인: A(1차로 앞), D(3차로), F(1차로 200m 뒤)는 알림을 받지 않아야 한다
 # 사용: scenario_lane.sh <서버 로그 파일>
@@ -20,34 +20,36 @@ for d in emulator-5554 emulator-5556; do
   $ADB -s $d logcat -c
 done
 $ADB -s emulator-5554 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id B --ei lane 2 --ed offset_m 0 >/dev/null
-$ADB -s emulator-5556 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id C --ei lane 1 --ed offset_m -30 >/dev/null
+$ADB -s emulator-5556 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id C --ei lane 1 --ed offset_m -45 >/dev/null
 for i in $(seq 1 40); do
   curl -s localhost:8080/status | python3 -c "
 import sys,json
 v=json.load(sys.stdin)['vehicles']
-sys.exit(0 if {'B','C'}<=set(v) and abs(v['B']['lat']-37.4127212)<2e-5 and abs((v['C']['lat']-v['B']['lat'])*111320+30)<2 else 1)" && break
+sys.exit(0 if {'B','C'}<=set(v) and abs(v['B']['lat']-37.4127212)<2e-5 and abs((v['C']['lat']-v['B']['lat'])*111320+45)<2 else 1)" && break
   sleep 1
 done
-python3 -I $HC/scripts/fleet.py run --anchor B A:1:+20:20 D:3:-20:40 F:1:-200:60 > "$SHOT/fleet.log" 2>&1 &
+python3 -I $HC/scripts/fleet.py run --anchor B A:1:+20:20 D:3:-20:40 F:1:-200:40 > "$SHOT/fleet.log" 2>&1 &
 sleep 3
 N=$(wc -l < $SL)
-echo "--- B 20km/h, C 40km/h 주행"
+echo "--- B 20km/h, C 30km/h 주행"
 python3 -I $HC/scripts/vc.py --port 8088 drive 20 >/dev/null
-python3 -I $HC/scripts/vc.py --port 8089 drive 40 >/dev/null
-sleep 1
-echo "--- B 왼쪽 깜빡이"
-python3 -I $HC/scripts/vc.py --port 8088 turn left >/dev/null
+python3 -I $HC/scripts/vc.py --port 8089 drive 30 >/dev/null
 sleep 3
+echo "--- B 왼쪽 깜빡이"
+bash $S/mark.sh in
+python3 -I $HC/scripts/vc.py --port 8088 turn left >/dev/null
+sleep 4; bash $S/mark.sh out
 $ADB -s emulator-5554 exec-out screencap -p > "$SHOT/lane_b.png"
 $ADB -s emulator-5556 exec-out screencap -p > "$SHOT/lane_c.png"
 echo "--- B 1차로로 이동"
 $ADB -s emulator-5554 shell am broadcast --user 10 -a com.hyperconnect.app.SET_LANE --ei lane 1 >/dev/null
 python3 -I $HC/scripts/vc.py --port 8088 turn off >/dev/null
-sleep 8
-echo "--- C 정차"
-python3 -I $HC/scripts/vc.py --port 8089 park >/dev/null
-python3 -I $HC/scripts/vc.py --port 8088 park >/dev/null
-sleep 3
+sleep 6
+echo "--- C 신호 대기로 서서히 정차 (B는 계속 주행)"
+for v in 30 20 12 5; do python3 -I $HC/scripts/vc.py --port 8089 drive $v >/dev/null; sleep 0.7; done
+bash $S/mark.sh in
+python3 -I $HC/scripts/vc.py --port 8089 stop >/dev/null
+sleep 4; bash $S/mark.sh out
 $ADB -s emulator-5556 exec-out screencap -p > "$SHOT/lane_c_parked.png"
 echo "== server"; tail -n +$((N+1)) $SL | grep -E '\[lane\]|\[emote\]'
 echo "== B"; $ADB -s emulator-5554 logcat -d | grep -E '차로 변경 알림|마지막 이모트' | tail -3

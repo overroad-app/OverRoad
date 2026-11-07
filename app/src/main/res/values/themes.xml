@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 앱 창 자체는 투명하다. 평소에는 아래쪽 이모트 바만 떠 있고, 그 뒤로 Pleos 홈 화면이 보인다 -->
+    <style name="Theme.HyperConnect.Floating" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
+</resources>

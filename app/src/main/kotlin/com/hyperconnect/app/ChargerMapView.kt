@@ -78,7 +78,7 @@ class ChargerMapView(context: Context) : View(context) {
             fill.color = Color.rgb(59, 130, 246)
             canvas.drawCircle(mx, my, 22f, fill)
             canvas.drawCircle(mx, my, 22f, ring)
-            canvas.drawText("나", mx, my - 34f, text)
+            canvas.drawText("나", mx - 52f, my + 12f, text)  // 옆에 써서 충전소 이름과 겹치지 않게
         }
         // 범례
         val ly = h - 18f

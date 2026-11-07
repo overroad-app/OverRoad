@@ -9,14 +9,16 @@
   POST /position                          차량 상태 갱신: 위치·방향·속도·차로 (JSON)
   POST /events                            이벤트 보고 (JSON)
   POST /emote                             앞차·뒤차에게 이모트 보내기 (JSON)
-  POST /feedback                          받은 경고가 맞았는지 피드백 → 보고 차량의 신뢰 점수
   POST /forget                            데이터 공유 동의 철회 → 이 차량의 위치·관측·통계 삭제
   POST /rating                            충전 후 충전소 별점 (1~5)
   POST /public_status                     공공 충전기 상태 입력 (환경공단 API 대체, 시연용)
   POST /demo                              시연 설정 (charge_time_scale: 충전 시간 배속)
-  GET  /stats?vehicle=B                   내 기여 통계·신뢰 점수·배지
+  GET  /stats?vehicle=B                   내 기여 통계·배지·최근 보고 기록
   GET  /chargers?vehicle=B                충전소 지도: 모든 충전소의 별점·혼잡·이 차량의 예상 완료 시각
+  GET  /nearby?vehicle=B                 앱 세부 정보 화면: 주변 기상·사고·긴급차량·연결 차량 수
   GET  /feed/weather[?format=geojson]     외부 제공용 기상 위험 구간 피드 (현대차 내비·외부 서비스가 가져간다)
+  GET  /store?vehicle=B                   이모트 상점: 팩 목록·보유·장착 (POST /store/buy 는 결제 SDK 출시 전까지 안내만)
+  GET  /surroundings?vehicle=B           주변 차량 시각화: 같은 방향 앞 200m·뒤 86m 안 차량의 상대 위치 (ID는 익명)
   (서버가 1초마다 사고 정체 구간, 기상 구간, EV 충전 대기 예측, 긴급차량 접근을 계산해 해당 차량에 보낸다)
   GET  /status                            차량 레지스트리·최근 이벤트·경고
   GET  /dashboard                         실시간 도로 상황 대시보드
@@ -62,7 +64,9 @@ weather_zones = {}        # 구간 ID -> 확정된 기상 구간 (외부 피드�
 #   cooldown_s  : 같은 지점 같은 이벤트를 한 차량에 다시 보내지 않는 시간
 #   inside_m    : 이벤트 지점을 이만큼 지나친 차량도 대상 (기상 구간은 지나쳐도 그 안에 있다)
 RULES = {
-    "hard_brake":      {"min_reports": 1, "radius_m": 1500, "lanes": "same", "cooldown_s": 20,  "inside_m": 0},
+    # 급제동은 곧 만날 차량에만: 뒤차의 현재 속도로 horizon_s 안에 도달할 거리(최소 min_m)까지. radius_m은 상한
+    "hard_brake":      {"min_reports": 1, "radius_m": 1500, "lanes": "same", "cooldown_s": 20,  "inside_m": 0,
+                        "horizon_s": 10, "min_m": 100},
     "stopped_vehicle": {"min_reports": 1, "radius_m": 2000, "lanes": "all",  "cooldown_s": 60,  "inside_m": 0},
     "crash":           {"min_reports": 1, "radius_m": 3000, "lanes": "all",  "cooldown_s": 120, "inside_m": 0},
     # 기상은 min_reports 대신 WEATHER_RULES의 동시 다발 기준으로 확정한다
@@ -83,8 +87,8 @@ ZONE_LABELS = {"accident": "사고 정체", "suspected": "사고·장애물 추�
 
 # EV 충전소 (rev2): 시연용 고정 목록. 실제로는 환경공단 충전소 정보 API의 위치·충전기 수·정격 출력을 쓴다
 CHARGERS = [
-    {"id": "PANGYO", "name": "판교역 충전소", "lat": 37.4020, "lon": 127.1080, "stalls": 2, "kw": 100},
-    {"id": "SIHEUNG", "name": "시흥동 충전소", "lat": 37.4180, "lon": 127.1000, "stalls": 2, "kw": 100},
+    {"id": "PANGYO", "name": "판교역 충전소", "operator": "채비", "lat": 37.4020, "lon": 127.1080, "stalls": 2, "kw": 100},
+    {"id": "SIHEUNG", "name": "시흥동 충전소", "operator": "에버온", "lat": 37.4180, "lon": 127.1000, "stalls": 2, "kw": 100},
 ]
 CHARGER_RADIUS_M = 80    # 이 안에 있으면 충전소에 있는 차량
 BATTERY_KWH = 77.4       # 충전 시간 어림용 가정 (차종별 용량은 Tier 2: 차량 정보 연동)
@@ -107,6 +111,7 @@ demo = {"charge_time_scale": 1.0}  # 시연에서만: 충전 시간을 빠르게
 EMERGENCY_ROLES = {"ambulance": ("구급차", "🚑"), "fire": ("소방차", "🚒"), "police": ("경찰차", "🚓")}
 EMERGENCY_RANGE_M = 1000  # 긴급차량 앞쪽 이 거리 안의 차량에 알린다
 EMERGENCY_UPDATE_S = 2    # 접근 거리 갱신 주기
+NEARBY_M = 3000           # 앱 세부 정보 화면에 보여 줄 범위
 
 lock = threading.Lock()
 subscribers = {}   # vehicle_id -> {"queue": list, "cond": Condition}
@@ -123,24 +128,38 @@ last_emote = {}    # vehicle_id -> 마지막 이모트 전송 시각
 EMOTES = {"thanks": "👍", "sorry": "🙏", "hello": "👋"}
 # 이모트 팩: 같은 세 가지 표현을 팩마다 다른 소리·그림으로 전한다. 받는 쪽은 보낸 차의 팩 소리를 듣는다
 # (받아 본 소리가 구매로 이어지는 구조). 유료 팩도 주행 중에는 소리만, 판매는 Pleos 결제 SDK 출시 후.
-EMOTE_PACKS = {"basic": "기본", "retro": "레트로 8비트", "orchestra": "오케스트라"}
+# 이모트 상점 (2026-11-08): 기본 · 현대차 오리지널(유료) · 특별 지급(판매 안 함, 조건 충족 시) · 창작마당(심사 통과작, 유료)
+# 유료 구매는 Pleos 결제 SDK 출시 후. 지금은 보유(무료·지급)한 팩만 장착할 수 있고, 모든 팩은 미리 들어 볼 수 있다.
+STORE = [
+    {"id": "basic", "name": "기본", "section": "basic", "maker": "HyperConnect", "price": 0},
+    {"id": "retro", "name": "레트로 8비트", "section": "original", "maker": "현대차", "price": 2200},
+    {"id": "orchestra", "name": "오케스트라", "section": "original", "maker": "현대차", "price": 2200},
+    {"id": "electric", "name": "아이오닉 전자음", "section": "original", "maker": "현대차 · 차종 사운드", "price": 3300},
+    {"id": "launch", "name": "출고 기념", "section": "special", "maker": "현대차", "unlock": "신차 출고 30일 이내 (시연: 모든 차량)"},
+    {"id": "best", "name": "베스트 드라이버", "section": "special", "maker": "현대차", "unlock": "베스트 드라이버 배지를 받으면"},
+    {"id": "emergency", "name": "긴급차량 감사", "section": "special", "maker": "현대차",
+     "unlock": "구급·소방·경찰차 전용 · 길을 열어 준 차에게 지나간 뒤 자동으로 전해져요"},
+    {"id": "gugak", "name": "국악 한 소절", "section": "creator", "maker": "크리에이터 한소리", "price": 1100},
+    {"id": "marimba", "name": "마림바", "section": "creator", "maker": "크리에이터 우드톤", "price": 1100},
+]
+EMOTE_PACKS = {p["id"]: p["name"] for p in STORE}
+purchases = defaultdict(set)   # 차량 -> 산 팩 (결제 SDK 연동 후 채워진다)
 EMOTE_RANGE_M = 150       # 이 거리 안의 바로 앞차·뒤차에게만 보낸다
 EMOTE_COOLDOWN_S = 5      # 한 차량이 이모트를 보낼 수 있는 최소 간격
 OTHER_LANE_PENALTY_M = 30 # 같은 거리면 같은 차로 차량을 우선한다
 
-# 기여 통계와 신뢰 점수: 경고 피드백으로 보고 차량의 신뢰도를 갱신하고, 합의 기준에 반영한다
-stats = defaultdict(lambda: {"reports": 0, "helped": 0, "emotes": {k: 0 for k in EMOTES},
-                             "correct": 0, "incorrect": 0, "charge_reports": 0})
-event_reporters = {}      # event_id -> 보고 차량들 (피드백을 누구에게 반영할지)
-feedback_given = set()    # (피드백한 차량, event_id) — 같은 경고에 한 번만
-LOW_TRUST = 0.3           # 피드백 3건 이상에서 이보다 낮으면 혼자서는 확정되지 않는다
-MIN_FEEDBACK = 3
+# 기여 통계 (2026-11-08): 신뢰 점수는 쓰지 않는다. 안전 경고는 보수적으로 일단 보내고,
+# 문제는 운영 피드백과 업데이트로 고친다. 조작된 보고는 차량 인증·보고 빈도 제한 같은 보안으로 막는다(출시 과제).
+stats = defaultdict(lambda: {"reports": 0, "helped": 0, "emotes": {k: 0 for k in EMOTES}, "charge_reports": 0})
+report_log = defaultdict(list)  # 차량 -> 최근 보고와 전달 대수 (내 기여 화면)
+REPORT_LOG_MAX = 10
 MIN_RANKED = 5            # 이 대수 이상 참여해야 상위 %를 보여준다
 
 # 차로 변경 의도 공유
 MERGE_BEHIND_M = 60       # 진입하려는 차로에서 내 뒤 이 거리 안의 차량만 대상
 MERGE_ALONGSIDE_M = 5     # 바로 옆(사각지대)에 있는 차량도 대상
 MERGE_WINDOW_S = 10       # 깜빡이 후 이 시간 안에 차로가 바뀌면 진입 성공
+LANE_UNKNOWN_SIDE_M = (1.0, 7.0)  # 차로를 모를 때 '옆 차로'로 보는 좌우 거리 범위
 lane_intents = {}         # 깜빡이 켠 차량 -> {"dir", "from_lane", "target", "since", "notified": set}
 
 
@@ -178,31 +197,9 @@ def live_vehicles(now):
     return {k: v for k, v in vehicles.items() if now - v["ts"] <= VEHICLE_TTL_S}
 
 
-# ---------- 신뢰 점수 ----------
-
-def trust(vid):
-    """경고가 맞았다는 피드백 비율 (라플라스 보정: 피드백이 없으면 0.5)."""
-    s = stats[vid]
-    return (s["correct"] + 1) / (s["correct"] + s["incorrect"] + 2)
-
-
-def trust_weight(vid):
-    """합의 계산에서 이 차량의 보고가 차지하는 무게 (0.5~1.5, 기본 1.0)."""
-    return 0.5 + trust(vid)
-
-
-def low_trust(vid):
-    s = stats[vid]
-    return s["correct"] + s["incorrect"] >= MIN_FEEDBACK and trust(vid) < LOW_TRUST
-
-
 def consensus_met(reporters, min_reports):
-    """신뢰 가중치 합이 필요한 대수 이상이어야 확정. 신뢰가 낮은 차량 혼자서는 확정되지 않는다."""
-    if sum(trust_weight(r) for r in reporters) < min_reports - 1e-9:
-        return False
-    if min_reports == 1 and len(reporters) == 1 and low_trust(next(iter(reporters))):
-        return False
-    return True
+    """서로 다른 보고 차량이 필요한 대수 이상이면 확정."""
+    return len(reporters) >= min_reports
 
 
 # ---------- 전파 ----------
@@ -237,6 +234,11 @@ def propagate(event, reporters, now, verbose=True):
         if along > rule["radius_m"]:
             decisions[vid] = f"반경 밖 {round(along)}m"
             continue
+        if "horizon_s" in rule:
+            reach = max(rule["min_m"], (v.get("speed_kph") or 0) / 3.6 * rule["horizon_s"])
+            if along > reach:
+                decisions[vid] = f"{rule['horizon_s']}초 거리 밖 {round(along)}m (도달 가능 {round(reach)}m)"
+                continue
         if rule["lanes"] == "same" and lanes not in ("same", "unknown"):
             decisions[vid] = f"다른 차로({lanes})"
             continue
@@ -258,6 +260,8 @@ def propagate(event, reporters, now, verbose=True):
     del alerts[:-50]
     for r in reporters:  # 내 보고로 경고를 받은 차량 수 = 기여
         stats[r]["helped"] += len(notified)
+        report_log[r].insert(0, {"ts": now, "type": event["type"], "notified": len(notified)})
+        del report_log[r][REPORT_LOG_MAX:]
     if verbose or notified:
         for vid, why in decisions.items():
             print(f"    {vid}: {why}", flush=True)
@@ -283,7 +287,6 @@ def handle_report(event):
             print(f"  신뢰 합의 부족 (보고 {len(reporters)}대) → 확정 대기", flush=True)
             return False, []
         event["event_id"] = f"{event['type']}-{event['vehicle']}-{int(now * 1000)}"
-        event_reporters[event["event_id"]] = set(reporters)
         record = {k: event.get(k) for k in ("type", "vehicle", "lat", "lon", "lane", "ts", "event_id")}
         events.append(record)
         del events[:-30]
@@ -337,8 +340,7 @@ def try_confirm_weather(hazard, rule, obs, now):
     lat = sum(weather_obs[v]["lat"] for v in onset) / len(onset)
     lon = sum(weather_obs[v]["lon"] for v in onset) / len(onset)
     share, seeing = weather_share(hazard, lat, lon, now)
-    weight = sum(trust_weight(v) for v in onset)
-    if weight < rule["min_onsets"] - 1e-9 or share < rule["share"]:
+    if len(onset) < rule["min_onsets"] - 1e-9 or share < rule["share"]:
         print(f"[weather] {hazard} 동시 다발 대기: {BURST_WINDOW_S}초 안 새로 켠 차량 {len(onset)}대"
               f"(필요 {rule['min_onsets']}), 지역 관측 비율 {share:.0%}(필요 {rule['share']:.0%})", flush=True)
         return None
@@ -346,9 +348,9 @@ def try_confirm_weather(hazard, rule, obs, now):
     zone = {"id": zid, "type": hazard, "label": WEATHER_LABELS[hazard], "status": "active",
             "lat": lat, "lon": lon, "radius_m": WEATHER_ZONE_M, "heading": obs.get("heading"),
             "confirmed_at": now, "updated_at": now, "ended_at": None,
-            "onset_vehicles": len(onset), "observing": len(seeing), "share": round(share, 2)}
+            "onset_vehicles": len(onset), "observing": len(seeing), "share": round(share, 2),
+            "reporters": sorted(onset)}  # 경고에서 뺄 보고 차량 (외부 피드에는 내보내지 않는다)
     weather_zones[zid] = zone
-    event_reporters[zid] = set(onset)
     print(f"[weather] {hazard} 확정: {BURST_WINDOW_S}초 안 {len(onset)}대가 새로 켬, 지역 관측 비율 {share:.0%}", flush=True)
     events.append({"type": hazard, "vehicle": obs["vehicle"], "lat": lat, "lon": lon, "lane": None, "ts": now,
                    "reporters": sorted(onset)})
@@ -359,7 +361,7 @@ def try_confirm_weather(hazard, rule, obs, now):
 def propagate_weather(zone, now, verbose=True):
     event = {"type": zone["type"], "vehicle": None, "lat": zone["lat"], "lon": zone["lon"],
              "heading": zone["heading"], "lane": None, "ts": now, "event_id": zone["id"], "zone_key": zone["id"]}
-    notified, _ = propagate(event, set(event_reporters.get(zone["id"], ())), now, verbose=verbose)
+    notified, _ = propagate(event, set(zone.get("reporters", ())), now, verbose=verbose)
     return notified
 
 
@@ -434,9 +436,22 @@ def handle_emote(body):
         return {"delivered": True, "target": body["target"]}
 
 
-def deliver_emote(sender, receiver, emote, from_side, now, auto=False):
-    """이모트 하나를 전달하고 기록한다. 보낸 차의 팩으로 들린다. 호출 시 lock을 잡고 있어야 한다."""
-    pack = (vehicles.get(sender) or {}).get("emote_pack") or "basic"
+def owned_packs(vid):
+    """이 차량이 장착할 수 있는 팩: 기본 + 특별 지급(조건 충족) + 산 팩. 호출 시 lock을 잡고 있어야 한다."""
+    v = vehicles.get(vid) or {}
+    owned = {"basic", "launch"} | purchases[vid]
+    if "베스트 드라이버" in badges_of(vid)[0]:
+        owned.add("best")
+    if v.get("role") in EMERGENCY_ROLES:
+        owned.add("emergency")
+    return owned
+
+
+def deliver_emote(sender, receiver, emote, from_side, now, auto=False, pack=None):
+    """이모트 하나를 전달하고 기록한다. 보낸 차의 팩으로 들린다(갖고 있지 않은 팩이면 기본). 호출 시 lock을 잡고 있어야 한다."""
+    pack = pack or (vehicles.get(sender) or {}).get("emote_pack") or "basic"
+    if pack not in owned_packs(sender):
+        pack = "basic"
     push(receiver, {"kind": "emote", "type": "emote", "emote": emote, "symbol": EMOTES[emote],
                     "pack": pack, "pack_name": EMOTE_PACKS[pack], "from": from_side, "auto": auto, "ts": now})
     stats[receiver]["emotes"][emote] += 1
@@ -445,25 +460,10 @@ def deliver_emote(sender, receiver, emote, from_side, now, auto=False):
     print(f"[emote] {sender} -> {receiver}: {EMOTES[emote]} {emote}{' (자동)' if auto else ''}", flush=True)
 
 
-def handle_feedback(body):
-    """받은 경고가 맞았는지 피드백: 그 경고를 보고한 차량들의 신뢰 점수에 반영한다."""
-    key = (body["vehicle"], body["event_id"])
-    with lock:
-        reporters = event_reporters.get(body["event_id"])
-        if reporters is None:
-            return {"ok": False, "reason": "알 수 없는 경고"}
-        if body["vehicle"] in reporters or key in feedback_given:
-            return {"ok": False, "reason": "이미 반영됨"}
-        feedback_given.add(key)
-        for r in reporters:
-            stats[r]["correct" if body["correct"] else "incorrect"] += 1
-        print(f"[feedback] {body['vehicle']} -> {sorted(reporters)}: {'맞음' if body['correct'] else '아님'}", flush=True)
-        return {"ok": True}
-
-
 def forget(vid):
     """데이터 공유 동의 철회: 이 차량의 위치·관측·통계를 지운다. (보고 이력은 익명 이벤트로만 남는다)"""
     with lock:
+        report_log.pop(vid, None)
         removed = [name for name, table in (("위치", vehicles), ("기상 관측", weather_obs), ("통계", stats),
                                             ("차로 변경", lane_intents)) if table.pop(vid, None) is not None]
         for key in [k for k in weather_onsets if k[0] == vid]:
@@ -475,31 +475,38 @@ def forget(vid):
 def score(vid):
     """베스트 드라이버 점수: 도운 차량 수와 받은 감사, 경고 정확도를 함께 본다 (👍 몰아주기만으로는 오르기 어렵게)."""
     s = stats[vid]
-    return (s["helped"] + 2 * s["emotes"]["thanks"] + s["emotes"]["hello"]) * (0.5 + trust(vid))
+    return s["helped"] + 2 * s["emotes"]["thanks"] + s["emotes"]["hello"]
+
+
+def badges_of(vid):
+    """배지와 순위. 호출 시 lock을 잡고 있어야 한다."""
+    if vid not in stats:
+        return [], None
+    s = stats[vid]
+    active = [v for v in stats if score(v) > 0]
+    mine = score(vid)
+    better = sum(1 for v in active if score(v) > mine)
+    # 참여 차량이 적으면 "상위 100%"처럼 어색한 값이 나오므로 순위 %는 숨긴다
+    top_pct = (round(100 * (better + 1) / len(active))
+               if len(active) >= MIN_RANKED and mine > 0 else None)
+    badges = []
+    if mine > 0 and (better == 0 or (top_pct or 100) <= 10):
+        badges.append("베스트 드라이버")
+    if s["helped"] >= 10:
+        badges.append("정보 기여왕")
+    if s["emotes"]["thanks"] >= 3:
+        badges.append("매너 드라이버")
+    return badges, top_pct
 
 
 def vehicle_stats(vid):
     """내 기여 화면에 보여줄 통계와 배지. 순위표는 공개하지 않고 내 위치(상위 %)만 알려준다."""
     with lock:
         s = stats[vid]
-        active = [v for v in stats if score(v) > 0]
-        mine = score(vid)
-        better = sum(1 for v in active if score(v) > mine)
-        # 참여 차량이 적으면 "상위 100%"처럼 어색한 값이 나오므로 순위 %는 숨긴다
-        top_pct = (round(100 * (better + 1) / len(active))
-                   if len(active) >= MIN_RANKED and mine > 0 else None)
-        feedback = s["correct"] + s["incorrect"]
-        badges = []
-        if mine > 0 and (better == 0 or (top_pct or 100) <= 10) and trust(vid) >= 0.6:
-            badges.append("베스트 드라이버")
-        if s["helped"] >= 10:
-            badges.append("정보 기여왕")
-        if s["emotes"]["thanks"] >= 3:
-            badges.append("매너 드라이버")
+        badges, top_pct = badges_of(vid)
         return {
             "vehicle": vid, "reports": s["reports"], "helped": s["helped"], "emotes": dict(s["emotes"]),
-            "accuracy": round(100 * s["correct"] / feedback) if feedback else None,
-            "trust": round(trust(vid), 2), "top_pct": top_pct, "badges": badges,
+            "top_pct": top_pct, "badges": badges, "history": report_log.get(vid, [])[:REPORT_LOG_MAX],
             "charge_reports": s["charge_reports"],
         }
 
@@ -731,6 +738,80 @@ def charger_map(vid):
         return {"me": me and {"lat": me["lat"], "lon": me["lon"], "heading": me["heading"]}, "chargers": out}
 
 
+def nearby_info(vid):
+    """앱 세부 정보 화면: 이 차량 주변의 기상·사고·긴급차량을 운전자가 읽을 문구로. 다른 차량 ID는 내보내지 않는다."""
+    now = time.time()
+    with lock:
+        live = live_vehicles(now)
+        me = live.get(vid)
+        if not me:
+            return {"weather": [], "accidents": [], "emergency": [], "connected": 0}
+
+        def where(lat, lon):
+            ahead = relative(me, lat, lon)[0]
+            return f"전방 {round(ahead)}m" if ahead >= 0 else f"뒤 {round(-ahead)}m"
+        weather = [f"{where(z['lat'], z['lon'])} {z['label']} · 지역 차량 {round(z['share'] * 100)}% 관측"
+                   for z in weather_zones.values() if z["status"] == "active"
+                   and distance_m(me["lat"], me["lon"], z["lat"], z["lon"]) <= NEARBY_M]
+        accidents = [f"{where(z['tail_lat'], z['tail_lon'])}부터 {z['label']} · 길이 {z['length_m']}m · 평균 {z['avg_kph']}km/h"
+                     for z in current_zones if z["kind"] != "jam"
+                     and distance_m(me["lat"], me["lon"], z["tail_lat"], z["tail_lon"]) <= NEARBY_M]
+        emergency = [f"{where(v['lat'], v['lon'])} {EMERGENCY_ROLES[v['role']][1]} {EMERGENCY_ROLES[v['role']][0]}"
+                     for o, v in live.items() if o != vid and v.get("role") in EMERGENCY_ROLES
+                     and distance_m(me["lat"], me["lon"], v["lat"], v["lon"]) <= NEARBY_M]
+        connected = sum(1 for o, v in live.items() if o != vid and distance_m(me["lat"], me["lon"], v["lat"], v["lon"]) <= 1000)
+    return {"weather": weather, "accidents": accidents, "emergency": emergency, "connected": connected}
+
+
+SURROUND_AHEAD_M = 200   # 화면 7 : 3 구도 → 앞 200m, 뒤 86m
+SURROUND_BEHIND_M = 86
+SURROUND_SIDE_M = 20
+BRAKE_GLOW_S = 4         # 급제동 보고 뒤 이 시간 동안 브레이크등을 켜서 그린다
+DECEL_SHOW_MPS2 = 1.5    # 이보다 빠르게 줄면 감속 중 (브레이크등)
+
+
+def surroundings(vid):
+    """주변 차량 시각화 (Tier 1 = GPS 비콘): 같은 방향으로 가는 차량의 상대 위치(앞뒤·좌우 m)와 상태.
+    다른 차량 ID는 내보내지 않고, 화면에서 움직임을 이어 그리기 위한 익명 번호만 준다."""
+    now = time.time()
+    with lock:
+        live = live_vehicles(now)
+        me = live.get(vid)
+        if not me:
+            return {"me": None, "vehicles": [], "connected": 0}
+        braking = {r["vehicle"] for r in reports if r["type"] == "hard_brake" and now - r["ts"] <= BRAKE_GLOW_S}
+        out = []
+        for oid, v in live.items():
+            if oid == vid or not same_direction(me["heading"], v["heading"]):
+                continue
+            along, cross = relative(me, v["lat"], v["lon"])
+            if not -SURROUND_BEHIND_M <= along <= SURROUND_AHEAD_M or abs(cross) > SURROUND_SIDE_M:
+                continue
+            out.append({"key": abs(hash((vid, oid))) % 100000, "along": round(along, 1), "cross": round(cross, 1),
+                        "lane": v.get("lane"), "speed_kph": v.get("speed_kph") or 0, "turn": v.get("turn"),
+                        "role": v.get("role"), "braking": oid in braking, "decel": now < v.get("decel_until", 0),
+                        "age_s": round(now - v["ts"], 1)})
+        connected = sum(1 for o, v in live.items() if o != vid and distance_m(me["lat"], me["lon"], v["lat"], v["lon"]) <= 1000)
+    return {"me": {"lane": me.get("lane"), "speed_kph": me.get("speed_kph") or 0, "turn": me.get("turn"),
+                   "decel": now < me.get("decel_until", 0)},
+            "vehicles": out, "connected": connected, "ahead_m": SURROUND_AHEAD_M, "behind_m": SURROUND_BEHIND_M,
+            "source": "gps_beacon", "error_m": 5}
+
+
+def store_info(vid):
+    """이모트 상점: 팩 목록과 이 차량의 보유·장착 상태."""
+    with lock:
+        owned = owned_packs(vid)
+        equipped = (vehicles.get(vid) or {}).get("emote_pack") or "basic"
+    return {"equipped": equipped if equipped in owned else "basic", "packs": [
+        {**p, "owned": p["id"] in owned} for p in STORE]}
+
+
+def store_buy(body):
+    """구매: Pleos 결제 SDK가 나오면 여기서 결제를 확인하고 purchases에 넣는다."""
+    return {"ok": False, "reason": "Pleos 결제 SDK 출시 후 구매할 수 있어요 (지금은 미리 듣기만)"}
+
+
 current_zones = []     # 대시보드용
 current_chargers = []  # 대시보드용
 charging_sent = {}     # vehicle_id -> 마지막으로 보낸 충전 예측 (바뀔 때만 다시 보낸다)
@@ -744,8 +825,8 @@ def zone_notices(now):
         event = {
             "type": "congestion", "lat": z["tail_lat"], "lon": z["tail_lon"], "heading": z["heading"], "lane": None,
             "zone": z["kind"], "label": z["label"], "length_m": z["length_m"],
-            # 정체 꼬리는 계속 움직이므로 지점 대신 구간 머리·종류로 재전송을 막는다 (종류가 바뀌면 다시 알림)
-            "zone_key": ("zone", z["head"], z["kind"]),
+            # 정체는 머리·꼬리 차량이 계속 바뀌므로 종류로만 재전송을 막는다 (종류가 바뀌면 다시 알림)
+            "zone_key": ("zone", z["kind"]),
         }
         notified, _ = propagate(event, set(z["members"]), now, verbose=False)
         if notified:
@@ -784,7 +865,12 @@ def charging_forecasts(now):
                 "stalls": state["stalls"], "charging_network": state["charging_network"],
                 "charging_other": state["charging_other"], "expected_other": state["expected_other"],
                 # 향하는 EV 수에서 자기 자신은 뺀다
-                "coming": max(0, state["coming"] - 1), "alt": alt, "ts": now}
+                "coming": max(0, state["coming"] - 1), "alt": alt, "ts": now,
+                # 여정 화면용: 운영사, 지금 빈 충전기, 도착 시 배터리, 예측 근거(자사 정확 / 타사 추정)
+                "operator": c.get("operator"), "free": max(0, state["stalls"] - state["charging"]),
+                "soc_arrival": round(soc_on_arrival(v, c)) if v.get("soc") is not None else None,
+                "known": state["charging_network"] + max(0, state["coming"] - 1),
+                "estimated": state["charging_other"] + state["expected_other"]}
         signature = (item["ahead"], item["wait_min"], item["charge_min"], round(item["done_ts"] / 60),
                      item["rating"], item["kw"], item["coming"], item["charging_network"], item["charging_other"],
                      json.dumps(alt and alt["name"]))
@@ -820,10 +906,17 @@ def emergency_yield(now):
                 push(vid, {**item, "status": "passed"})
                 print(f"[emergency] {label} {em_id} 통과 -> {vid}", flush=True)
                 del emergency_sent[key]
+                # 특별 지급 '긴급차량 감사': 지나간 긴급차량이 길을 열어 준 차에게 자동으로 고마움을 전한다
+                if role in EMERGENCY_ROLES and not v.get("role"):
+                    deliver_emote(em_id, vid, "thanks", "ahead", now, auto=True, pack="emergency")
 
 
 CLOSE_ALERT_M = 300  # 사고·정차 지점에 이만큼 가까워지면 한 번 더 (앱에서는 빨간 경고로) 알린다
 close_sent = set()   # (차량, 이벤트 시각) — 가까워짐 알림을 이미 보낸 조합
+
+
+zone_close_sent = {}       # vehicle_id -> 마지막 정체 꼬리 경고 시각
+ZONE_CLOSE_COOLDOWN_S = 120
 
 
 def close_alerts(now):
@@ -838,13 +931,17 @@ def close_alerts(now):
                                          e["lat"], e["lon"])[0] <= z["length_m"] + 300), None)
         lat, lon = (zone["tail_lat"], zone["tail_lon"]) if zone else (e["lat"], e["lon"])
         for vid, v in live.items():
-            # 같은 정체에 사고 보고가 여러 건이어도 꼬리 경고는 한 번
-            key = (vid, ("zone", zone["head"]) if zone else e["ts"])
+            # 같은 정체에 사고 보고가 여러 건이거나 정체 머리 차량이 바뀌어도 꼬리 경고는 한 번
+            key = (vid, e["ts"])
             if vid == e["vehicle"] or key in close_sent or (zone and vid in zone["members"]):
+                continue
+            if zone and now - zone_close_sent.get(vid, 0) < ZONE_CLOSE_COOLDOWN_S:
                 continue
             along, _ = relative(v, lat, lon)
             if 0 < along <= CLOSE_ALERT_M:
                 close_sent.add(key)
+                if zone:
+                    zone_close_sent[vid] = now
                 item = {"type": e["type"], "distance_m": round(along),
                         "lane": lane_relation(v.get("lane"), e.get("lane")), "reporters": 1, "ts": now,
                         **({"zone": "tail", "length_m": zone["length_m"]} if zone else {})}
@@ -865,7 +962,7 @@ def lane_changes(now):
         if me is None or now - intent["since"] > MERGE_WINDOW_S + 5:
             del lane_intents[vid]
             continue
-        if me.get("lane") == intent["target"]:  # 진입 성공
+        if intent["target"] is not None and me.get("lane") == intent["target"]:  # 진입 성공
             del lane_intents[vid]
             merge_done(vid, me, live, now)
             continue
@@ -873,9 +970,15 @@ def lane_changes(now):
             continue
         best, best_gap = None, None
         for oid, o in live.items():
-            if oid == vid or o.get("lane") != intent["target"] or not same_direction(me["heading"], o["heading"]):
+            if oid == vid or not same_direction(me["heading"], o["heading"]):
                 continue
-            ahead_of_me = relative(me, o["lat"], o["lon"])[0]  # 음수 = 내 뒤
+            ahead_of_me, side_m = relative(me, o["lat"], o["lon"])  # 음수 = 내 뒤, 양수 = 오른쪽
+            if intent["target"] is not None:
+                if o.get("lane") != intent["target"]:
+                    continue
+            # 차로를 모를 때: 깜빡이 쪽으로 옆 1~7m(대략 옆 차로, GPS 오차 감안해 넓게)에 있는 차
+            elif not LANE_UNKNOWN_SIDE_M[0] <= (side_m if intent["dir"] == "RIGHT" else -side_m) <= LANE_UNKNOWN_SIDE_M[1]:
+                continue
             if not -MERGE_BEHIND_M <= ahead_of_me <= MERGE_ALONGSIDE_M:
                 continue
             closing = (o.get("speed_kph") or 0) > (me.get("speed_kph") or 0) or abs(ahead_of_me) <= MERGE_ALONGSIDE_M
@@ -888,7 +991,7 @@ def lane_changes(now):
                        "side": intent["dir"], "ts": now})
             push(best, {"kind": "lane", "type": "lane", "role": "yielding", "distance_m": gap,
                         "side": intent["dir"], "ts": now})
-            print(f"[lane] {vid} → {intent['target']}차로 진입 의도, 뒤 {gap}m {best}에 알림", flush=True)
+            print(f"[lane] {vid} → {(str(intent['target']) + '차로') if intent['target'] else intent['dir'] + '(차로 모름)'} 진입 의도, 뒤 {gap}m {best}에 알림", flush=True)
 
 
 def merge_done(vid, me, live, now):
@@ -961,7 +1064,7 @@ class Handler(BaseHTTPRequestHandler):
                     "events": events[-10:],
                     "alerts": alerts[-20:],
                     "emotes": emotes[-10:],
-                    "stats": {v: {**stats[v], "trust": round(trust(v), 2)} for v in list(stats)},
+                    "stats": {v: dict(stats[v]) for v in list(stats)},
                     "lane_intents": {v: {k: i[k] for k in ("dir", "target", "since")} for v, i in lane_intents.items()},
                     "zones": current_zones,
                     "chargers": [{**s, **next(c for c in CHARGERS if c["id"] == s["id"])} for s in current_chargers],
@@ -976,6 +1079,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, vehicle_stats(q["vehicle"]))
         elif url.path == "/chargers":
             self._json(200, charger_map(q.get("vehicle")))
+        elif url.path == "/store":
+            self._json(200, store_info(q.get("vehicle")))
+        elif url.path == "/surroundings":
+            self._json(200, surroundings(q.get("vehicle")))
+        elif url.path == "/nearby":
+            self._json(200, nearby_info(q.get("vehicle")))
         elif url.path == "/feed/weather":
             self._json(200, weather_feed(q.get("format")))
         elif url.path == "/dashboard":
@@ -989,7 +1098,7 @@ class Handler(BaseHTTPRequestHandler):
             "/position": ("vehicle", "lat", "lon", "heading"),
             "/events": ("vehicle", "type", "lat", "lon"),
             "/emote": ("vehicle", "emote", "target"),
-            "/feedback": ("vehicle", "event_id", "correct"),
+            "/store/buy": ("vehicle", "pack"),
             "/forget": ("vehicle",),
             "/rating": ("vehicle", "station", "stars"),
             "/public_status": ("station",),
@@ -1017,24 +1126,32 @@ class Handler(BaseHTTPRequestHandler):
                 prev = vehicles.get(body["vehicle"], {})
                 turn, lane = body.get("turn"), body.get("lane")
                 # 깜빡이가 새로 켜지면 진입하려는 차로를 기록한다 (1차로가 가장 왼쪽)
-                if turn in ("LEFT", "RIGHT") and turn != prev.get("turn") and lane:
-                    target = lane - 1 if turn == "LEFT" else lane + 1
-                    if target >= 1:
+                if turn in ("LEFT", "RIGHT") and turn != prev.get("turn"):
+                    # 차로를 모르면(Tier 1 GPS만) 목표 차로 없이 기록하고, 대상은 위치 기하로 넓게 고른다
+                    target = (lane - 1 if turn == "LEFT" else lane + 1) if lane else None
+                    if target is None or target >= 1:
                         lane_intents[body["vehicle"]] = {"dir": turn, "from_lane": lane, "target": target,
                                                          "since": time.time(), "notified": set()}
+                # 감속 중인지: 이전 보고보다 속도가 빠르게 줄면(1.5m/s² 이상) 1.5초 동안 "감속 중"으로 둔다 (시각화의 브레이크등)
+                now_ts = time.time()
+                prev_kph, prev_ts = prev.get("speed_kph"), prev.get("ts")
+                decel_until = prev.get("decel_until", 0)
+                if prev_kph is not None and prev_ts and body.get("speed_kph") is not None and 0 < now_ts - prev_ts < 3:
+                    if (prev_kph - body["speed_kph"]) / 3.6 / (now_ts - prev_ts) >= DECEL_SHOW_MPS2:
+                        decel_until = now_ts + 1.5
                 vehicles[body["vehicle"]] = {
                     "lat": body["lat"], "lon": body["lon"], "heading": body["heading"],
                     "speed_kph": body.get("speed_kph"), "lane": body.get("lane"), "turn": body.get("turn"),
                     "role": body.get("role"), "soc": body.get("soc"), "charging": body.get("charging"),
                     "dest": body.get("dest"), "auto_thanks": body.get("auto_thanks", False),
                     "emote_pack": body.get("emote_pack") if body.get("emote_pack") in EMOTE_PACKS else "basic",
-                    "ts": time.time(),
+                    "ts": now_ts, "decel_until": decel_until,
                 }
             self._json(200, {"ok": True})
+        elif path == "/store/buy":
+            self._json(200, store_buy(body))
         elif path == "/emote":
             self._json(200, handle_emote(body))
-        elif path == "/feedback":
-            self._json(200, handle_feedback(body))
         elif path == "/rating":
             self._json(200, handle_rating(body))
         elif path == "/public_status":
@@ -1042,9 +1159,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/demo":
             if body.pop("reset", False):  # 시연을 다시 시작할 때: 이벤트·전송 기록을 비운다 (같은 지점 재시연이 '최근 전송함'에 막히지 않게)
                 with lock:
-                    for table in (events, alerts, reports, sent, close_sent, weather_zones, weather_onsets, weather_obs):
+                    for table in (events, alerts, reports, sent, close_sent, zone_close_sent, weather_zones, weather_onsets, weather_obs):
                         table.clear()
                 print("[demo] 이벤트·전송 기록 초기화", flush=True)
+            if body.pop("reset_stats", False):  # 신뢰도가 쌓이는 과정을 처음부터 보여 줄 때
+                with lock:
+                    for table in (stats, report_log):
+                        table.clear()
+                print("[demo] 기여 통계 초기화", flush=True)
             demo.update({k: float(v) for k, v in body.items() if k in demo})
             print(f"[demo] {demo}", flush=True)
             self._json(200, demo)

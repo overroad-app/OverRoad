@@ -10,7 +10,10 @@
         dest=PANGYO[,eta=300]        목적지 충전소 (eta 생략 시 거리·속도로 계산)
         at=PANGYO[,charging=1]       충전소에 있는 차량 (charging=1이면 충전 중)
         turn=L@3                     3초에 왼쪽 깜빡이 켬 (L|R)
-        lane=1@6                     6초에 1차로로 이동 (이동하면 깜빡이 끔)
+        lane=1@6                     6초에 1차로로 이동 시작 (깜빡이를 켜고 약 3초에 걸쳐 옆으로 옮긴 뒤 끔)
+        speed=30@5                   5초부터 30km/h로 감속·가속 (감속은 최대 3m/s², 여러 번 쓸 수 있다: speed=30@5,speed=60@9)
+      모든 가상 차량은 앞차(에뮬레이터 B·C 포함)와 간격을 지키며 따라가고 앞차를 뚫고 지나가지 않는다.
+      긴급차량이 같은 차로 뒤에서 다가오면 옆 차로가 비어 있을 때 비켜 주고, 길이 막히면 긴급차량이 따라가며 기다린다.
         auto=1                       자동 감사 인사 켬
       --jam 시작 거리:대수:속도[:merge] → J1..Jn을 1~3차로에 30m 간격으로 배치
                                          (merge면 3차로가 끝나 3차로 차량이 왼쪽 깜빡이)
@@ -18,8 +21,6 @@
       가상 차량 A가 현재 위치에서 기상 관측을 보고 (run 중인 차량이어야 한다)
   python3 scripts/fleet.py report J9 crash
       가상 차량이 현재 위치에서 이벤트(crash, stopped_vehicle, hard_brake)를 보고
-  python3 scripts/fleet.py feedback D correct|wrong
-      가상 차량 D가 마지막으로 받은 경고에 피드백 (신뢰 점수 반영)
   python3 scripts/fleet.py emote D thanks ahead
       가상 차량 D가 바로 앞차에게 이모트(thanks, sorry, hello)를 보낸다
 """
@@ -79,6 +80,7 @@ def run(args):
     fleet = []
     for spec in args.vehicles:
         vid, lane, fwd, *rest = spec.split(":")
+        rest_all = list(rest)
         opts = dict(kv.split("=", 1) for part in rest if "=" in part for kv in part.split(","))
         rest = [r for r in rest if "=" not in r]
         speed = float(rest[0]) if rest and rest[0] else 0.0
@@ -89,6 +91,8 @@ def run(args):
                       "at": chargers.get(opts.get("at")), "charging": opts.get("charging") == "1",
                       "turn_at": (opts["turn"].split("@") if "turn" in opts else None),
                       "lane_at": (opts["lane"].split("@") if "lane" in opts else None),
+                      "speed_at": sorted(([float(x) for x in kv[6:].split("@")[::-1]] for part in rest_all for kv in part.split(",")
+                                          if kv.startswith("speed=")), key=lambda a: a[0]),  # [(시각, 속도), ...]
                       "auto": opts.get("auto") == "1"})
     if args.jam:
         start, count, speed, *kind = args.jam.split(":")
@@ -97,7 +101,7 @@ def run(args):
             turn = "LEFT" if kind == ["merge"] and lane == 3 else None
             fleet.append({"id": f"J{i + 1}", "lane": lane, "fwd": float(start) + i * 30, "speed": float(speed), "turn": turn,
                           "role": None, "soc": None, "dest": None, "eta": None, "at": None, "charging": False,
-                          "turn_at": None, "lane_at": None, "auto": False})
+                          "turn_at": None, "lane_at": None, "speed_at": [], "auto": False})
     for v in fleet:
         threading.Thread(target=listen, args=(v["id"],), daemon=True).start()
         extra = " ".join(x for x in (
@@ -107,41 +111,120 @@ def run(args):
         print(f"가상 차량 {v['id']}: {v['lane']}차로, {args.anchor} 대비 {v['fwd']:+.0f}m, {v['speed']:.0f}km/h {extra}", flush=True)
 
     base_lane = anchor.get("lane") or 1
-    start = time.time()
+    lat0, lon0, h0 = anchor["lat"], anchor["lon"], anchor["heading"]
+    ids = {v["id"] for v in fleet}
+    for v in fleet:  # 움직이는 상태: 위치(기준점에서 앞으로 m), 현재·목표 속도, 옆 위치(m)
+        v["pos"], v["cur"], v["target"] = v["fwd"], v["speed"], v["speed"]
+        v["side"] = (v["lane"] - base_lane) * LANE_WIDTH_M
+        v["to_lane"] = None
+        v["yielded"] = False
+
+    def on_road(lat, lon):
+        """기준점·진행 방향 기준 (앞 m, 오른쪽 m)."""
+        dy = (lat - lat0) * 111320
+        dx = (lon - lon0) * 111320 * math.cos(math.radians(lat0))
+        h = math.radians(h0)
+        return dx * math.sin(h) + dy * math.cos(h), dx * math.cos(h) - dy * math.sin(h)
+
+    def lane_of(side):
+        return base_lane + round(side / LANE_WIDTH_M)
+
+    def lane_free(lane, pos, skip):
+        """그 차로의 pos 앞뒤 12m가 비어 있는지 (차로를 바꿔도 되는지)."""
+        return all(abs(o["pos"] - pos) > 12 for o in others if o is not skip and o["lane_now"] == lane)
+
+    start = last = time.time()
     while True:
-        t = time.time() - start
+        now = time.time()
+        t, dt = now - start, min(0.5, now - last)
+        last = now
+        # 장애물: 다른 가상 차량 + 서버에 있는 실제 차량(에뮬레이터 B·C)
+        others = []
         for v in fleet:
-            # 예약된 깜빡이·차로 변경
+            if not v["at"]:
+                v["lane_now"] = lane_of(v["side"])
+                others.append({"id": v["id"], "pos": v["pos"], "cur": v["cur"], "lane_now": v["lane_now"],
+                               "lane_to": v["to_lane"], "role": v["role"], "v": v})
+        try:
+            for oid, o in call("/status")["vehicles"].items():
+                if oid in ids or now - o.get("ts", 0) > 3:
+                    continue
+                pos, side = on_road(o["lat"], o["lon"])
+                if abs(side) < 15:
+                    others.append({"id": oid, "pos": pos, "cur": o.get("speed_kph") or 0,
+                                   "lane_now": o.get("lane") or lane_of(side), "lane_to": None, "role": o.get("role"), "v": None})
+        except Exception:
+            pass
+        for v in fleet:
+            if v["at"]:
+                continue
+            # 예약된 깜빡이·차로 변경·속도 변경
             if v["turn_at"] and t >= float(v["turn_at"][1]) and not v.get("turned"):
                 v["turn"], v["turned"] = {"L": "LEFT", "R": "RIGHT"}[v["turn_at"][0]], True
                 print(f"[{v['id']}] 깜빡이 {v['turn']}", flush=True)
             if v["lane_at"] and t >= float(v["lane_at"][1]) and not v.get("moved"):
-                v["lane"], v["turn"], v["moved"] = int(v["lane_at"][0]), None, True
-                print(f"[{v['id']}] {v['lane']}차로로 이동", flush=True)
-            if v["at"]:  # 충전소에 서 있는 차량
+                v["to_lane"], v["moved"] = int(v["lane_at"][0]), True
+                v["turn"] = "LEFT" if v["to_lane"] < v["lane_now"] else "RIGHT"
+                print(f"[{v['id']}] {v['to_lane']}차로로 이동 시작", flush=True)
+            while v["speed_at"] and t >= v["speed_at"][0][0]:
+                v["target"] = v["speed_at"].pop(0)[1]
+                print(f"[{v['id']}] 목표 속도 {v['target']:.0f}km/h", flush=True)
+            # 긴급차량 양보: 같은 차로 뒤 150m 안에서 더 빠르게 다가오면 빈 옆 차로로 비킨다
+            if not v["role"] and v["to_lane"] is None and not v["yielded"]:
+                for o in others:
+                    if o["role"] in ("ambulance", "fire", "police") and o["lane_now"] == v["lane_now"] \
+                            and 0 < v["pos"] - o["pos"] < 150 and o["cur"] > v["cur"] + 5:
+                        for lane in (v["lane_now"] + 1, v["lane_now"] - 1):
+                            if 1 <= lane <= 3 and lane_free(lane, v["pos"], None):
+                                v["to_lane"], v["yielded"] = lane, True
+                                v["turn"] = "LEFT" if lane < v["lane_now"] else "RIGHT"
+                                print(f"[{v['id']}] 긴급차량에 양보 → {lane}차로", flush=True)
+                                break
+                        break
+            # 차로 변경: 약 3초에 걸쳐 옆으로
+            if v["to_lane"] is not None:
+                goal = (v["to_lane"] - base_lane) * LANE_WIDTH_M
+                step = 1.2 * dt
+                v["side"] = goal if abs(goal - v["side"]) <= step else v["side"] + math.copysign(step, goal - v["side"])
+                if v["side"] == goal:
+                    v["lane"], v["to_lane"], v["turn"] = v["to_lane"], None, None
+                    print(f"[{v['id']}] {v['lane']}차로 진입", flush=True)
+            # 앞차 따라가기: 내 차로(바꾸는 중이면 두 차로 모두)의 가장 가까운 앞차와 간격을 지킨다
+            lanes = {v["lane_now"]} | ({v["to_lane"]} if v["to_lane"] else set())
+            ahead = [o for o in others if o["v"] is not v and (o["lane_now"] in lanes or o["lane_to"] in lanes)
+                     and o["pos"] > v["pos"]]
+            want = v["target"]
+            if ahead:
+                lead = min(ahead, key=lambda o: o["pos"])
+                gap = lead["pos"] - v["pos"] - 5.0
+                if v["role"] and gap < 60 and v["to_lane"] is None:  # 긴급차량: 막히면 빈 옆 차로로
+                    for lane in (v["lane_now"] - 1, v["lane_now"] + 1):
+                        if 1 <= lane <= 3 and lane_free(lane, v["pos"], v):
+                            v["to_lane"] = lane
+                            break
+                safe = 6.0 + v["cur"] / 3.6 * 1.5     # 정지 간격 6m + 1.5초
+                if gap < safe:
+                    want = min(want, max(0.0, lead["cur"] - (safe - gap) * 1.5))
+            dv = want - v["cur"]
+            v["cur"] = max(0.0, v["cur"] + max(-6.0 * 3.6 * dt if ahead and want < v["cur"] - 15 else -3.0 * 3.6 * dt,
+                                               min(2.0 * 3.6 * dt, dv)))
+            v["pos"] += v["cur"] / 3.6 * dt
+        for v in fleet:
+            if v["at"]:
                 lat, lon = v["at"]["lat"], v["at"]["lon"]
             else:
-                right = (v["lane"] - base_lane) * LANE_WIDTH_M
-                lat, lon = offset(anchor["lat"], anchor["lon"], anchor["heading"], v["fwd"] + v["speed"] / 3.6 * t, right)
+                lat, lon = offset(lat0, lon0, h0, v["pos"], v["side"])
             dest = None
             if v["dest"]:
                 d = v["dest"]
                 eta = v["eta"] if v["eta"] is not None else (
                     math.dist((lat * 111320, lon * 88000), (d["lat"] * 111320, d["lon"] * 88000)) / max(v["speed"], 30) * 3.6)
                 dest = {"lat": d["lat"], "lon": d["lon"], "name": d["name"], "eta_s": max(0, round(eta - t))}
-            call("/position", {"vehicle": v["id"], "lat": lat, "lon": lon, "heading": anchor["heading"],
-                               "speed_kph": 0 if v["at"] else v["speed"], "lane": v["lane"], "turn": v["turn"],
+            call("/position", {"vehicle": v["id"], "lat": lat, "lon": lon, "heading": h0,
+                               "speed_kph": 0 if v["at"] else round(v["cur"], 1), "lane": v["lane"], "turn": v["turn"],
                                "role": v["role"], "soc": v["soc"], "charging": v["charging"], "dest": dest,
                                "auto_thanks": v["auto"]})
-        time.sleep(0.5)
-
-
-def feedback(args):
-    alerts = [a for a in call("/status")["alerts"] if a["to"] == args.vehicle and a.get("event_id")]
-    if not alerts:
-        raise SystemExit(f"{args.vehicle}이 받은 경고가 없습니다")
-    print(call("/feedback", {"vehicle": args.vehicle, "event_id": alerts[-1]["event_id"],
-                             "correct": args.verdict == "correct"}))
+        time.sleep(0.25)
 
 
 def report(args):
@@ -176,9 +259,6 @@ if __name__ == "__main__":
     ev = sp.add_parser("report")
     ev.add_argument("vehicle")
     ev.add_argument("type", choices=["crash", "stopped_vehicle", "hard_brake"])
-    fb = sp.add_parser("feedback")
-    fb.add_argument("vehicle")
-    fb.add_argument("verdict", choices=["correct", "wrong"])
     e = sp.add_parser("emote")
     e.add_argument("vehicle")
     e.add_argument("emote", choices=["thanks", "sorry", "hello"])
@@ -190,7 +270,5 @@ if __name__ == "__main__":
         weather(a)
     elif a.cmd == "report":
         report(a)
-    elif a.cmd == "feedback":
-        feedback(a)
     else:
         print(call("/emote", {"vehicle": a.vehicle, "emote": a.emote, "target": a.target}))

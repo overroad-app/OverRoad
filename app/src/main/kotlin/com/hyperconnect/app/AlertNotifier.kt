@@ -6,6 +6,12 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.drawable.Icon
 import android.util.Log
 
 /**
@@ -31,16 +37,22 @@ class AlertNotifier(private val context: Context) {
 
     /** [key]가 같으면 같은 알림을 갱신한다 (예: 긴급차량 접근 거리). [timeoutMs]가 지나면 저절로 사라진다. */
     fun show(key: String, title: String, text: String, color: Int, timeoutMs: Long, onlyOnce: Boolean = false,
-             icon: Int = android.R.drawable.ic_dialog_alert) {
+             icon: Int = android.R.drawable.ic_dialog_alert, fg: Int = Color.WHITE, stripe: IntArray? = null, art: String? = null,
+             picture: Bitmap? = null) {
         val open = PendingIntent.getActivity(
             context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_IMMUTABLE,
         )
         val n = Notification.Builder(context, CHANNEL)
             .setSmallIcon(icon)
-            .setContentTitle(title)
+            .setContentTitle(title.substringAfter(" "))  // 맨 앞 아이콘은 배지에 있으므로 제목에서는 뺀다
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
+            .setLargeIcon(when {
+                picture != null -> picture.copy(Bitmap.Config.ARGB_8888, true).let { b -> drawMark(Canvas(b), b.width.toFloat()); Icon.createWithBitmap(b) }
+                art == ART_BRAKE -> brakeBadge(color)
+                else -> badge(color, fg, stripe, title.substringBefore(" "))
+            })
             .setColor(color)
             .setColorized(true)
             .setCategory(Notification.CATEGORY_NAVIGATION)
@@ -56,9 +68,115 @@ class AlertNotifier(private val context: Context) {
         }
     }
 
+    /**
+     * Pleos 상단 알림은 흰 바탕에 제목·내용만 그린다 (색 지정과 직접 만든 레이아웃은 무시된다).
+     * 그래서 앱 카드의 색·띠·아이콘을 담은 작은 배지 그림으로 알림 종류를 구분한다.
+     */
+    private fun badge(color: Int, fg: Int, stripe: IntArray?, symbol: String): Icon {
+        val size = 128f
+        val bmp = Bitmap.createBitmap(size.toInt(), size.toInt(), Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val light = Color.luminance(color) > 0.8f
+        p.color = color
+        c.drawRoundRect(RectF(0f, 0f, size, size), 26f, 26f, p)
+        if (light) {  // 밝은 카드(구급차)는 흰 알림 바탕과 구분되도록 테두리를 그린다
+            p.style = Paint.Style.STROKE; p.strokeWidth = 5f; p.color = fg
+            c.drawRoundRect(RectF(3f, 3f, size - 3f, size - 3f), 24f, 24f, p)
+            p.style = Paint.Style.FILL
+        }
+        stripe?.takeIf { it.size >= 2 }?.let {
+            p.color = it[0]; c.drawRoundRect(RectF(12f, 16f, 28f, 64f), 6f, 6f, p)
+            p.color = it[1]; c.drawRoundRect(RectF(12f, 64f, 28f, 112f), 6f, 6f, p)
+        }
+        p.textSize = 66f
+        p.textAlign = Paint.Align.CENTER
+        p.color = Color.WHITE
+        c.drawText(symbol, if (stripe != null) 78f else size / 2, 88f, p)
+        drawMark(c, size)
+        return Icon.createWithBitmap(bmp)
+    }
+
+    /** 급제동 전용 배지: 어두운 빨강 바탕에 앞차 뒷모습, 양쪽 브레이크등이 빛난다. */
+    private fun brakeBadge(color: Int): Icon {
+        val size = 128f
+        val bmp = Bitmap.createBitmap(size.toInt(), size.toInt(), Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        p.color = color
+        c.drawRoundRect(RectF(0f, 0f, size, size), 26f, 26f, p)
+        // 브레이크등 빛 번짐
+        p.color = Color.argb(90, 255, 59, 48)
+        c.drawCircle(34f, 66f, 26f, p); c.drawCircle(94f, 66f, 26f, p)
+        // 차 뒷모습: 지붕·유리·차체·범퍼·바퀴
+        p.color = Color.rgb(30, 32, 38)
+        c.drawRoundRect(RectF(30f, 30f, 98f, 60f), 14f, 14f, p)
+        p.color = Color.rgb(120, 140, 160)
+        c.drawRoundRect(RectF(38f, 36f, 90f, 54f), 8f, 8f, p)
+        p.color = Color.rgb(30, 32, 38)
+        c.drawRoundRect(RectF(18f, 54f, 110f, 92f), 14f, 14f, p)
+        c.drawRoundRect(RectF(24f, 88f, 40f, 106f), 4f, 4f, p); c.drawRoundRect(RectF(88f, 88f, 104f, 106f), 4f, 4f, p)
+        // 브레이크등 (빨강) + 가운데 보조 제동등
+        p.color = Color.rgb(255, 59, 48)
+        c.drawRoundRect(RectF(22f, 60f, 46f, 72f), 5f, 5f, p); c.drawRoundRect(RectF(82f, 60f, 106f, 72f), 5f, 5f, p)
+        c.drawRoundRect(RectF(54f, 31f, 74f, 35f), 2f, 2f, p)
+        // 번호판 자리
+        p.color = Color.rgb(230, 230, 235)
+        c.drawRoundRect(RectF(52f, 76f, 76f, 86f), 2f, 2f, p)
+        drawMark(c, size)
+        return Icon.createWithBitmap(bmp)
+    }
+
+    /**
+     * HyperConnect 표시: 흰 상단 알림은 OS(Pleos) 공통 모양 그대로 쓰고, 이 알림이 HyperConnect가 띄운 것임을
+     * 아이콘 오른쪽 아래 작은 초록 체크로만 알린다.
+     */
+    private fun drawMark(c: Canvas, size: Float) {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val r = 21f; val cx = size - r - 2f; val cy = size - r - 2f
+        p.color = Color.WHITE
+        c.drawCircle(cx, cy, r + 4f, p)
+        p.color = Color.rgb(22, 163, 74)
+        c.drawCircle(cx, cy, r, p)
+        p.color = Color.WHITE; p.style = Paint.Style.STROKE; p.strokeWidth = 6f
+        p.strokeCap = Paint.Cap.ROUND; p.strokeJoin = Paint.Join.ROUND
+        val path = android.graphics.Path().apply {
+            moveTo(cx - 10f, cy + 1f); lineTo(cx - 3f, cy + 8f); lineTo(cx + 11f, cy - 7f)
+        }
+        c.drawPath(path, p)
+    }
+
+    /**
+     * 주행 중 조작판 (실험, 2026-11-08): 내비를 가리지 않고 쓰도록 OS 알림 하나에 충전 링(큰 아이콘)과 이모트 버튼 3개를 단다.
+     * 계속 남는 알림(ongoing)이라 알림 센터에서 언제든 열 수 있고, 처음 한 번은 상단 알림으로 뜬다.
+     * Pleos가 알림의 버튼을 그려 주는지 시험하기 위한 것.
+     */
+    fun showControls(title: String, text: String, picture: Bitmap?, popUp: Boolean) {
+        fun action(label: String, emote: String, ahead: Boolean, req: Int) = Notification.Action.Builder(
+            null as Icon?, label,
+            PendingIntent.getBroadcast(context, req, Intent(ACTION_EMOTE).setPackage(context.packageName)
+                .putExtra("emote", emote).putExtra("ahead", ahead), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT),
+        ).build()
+        val n = Notification.Builder(context, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(text)
+            .apply { picture?.let { setLargeIcon(Icon.createWithBitmap(it)) } }
+            .setOngoing(true)
+            .setOnlyAlertOnce(!popUp)
+            .setCategory(Notification.CATEGORY_NAVIGATION)
+            .addAction(action("👍 뒤차에 고마워요", "thanks", false, 11))
+            .addAction(action("🙏 미안해요", "sorry", false, 12))
+            .addAction(action("👍 앞차에 고마워요", "thanks", true, 13))
+            .build()
+        try { manager.notify("controls", ID, n) } catch (e: SecurityException) { Log.w("HyperConnect", "알림 권한 없음", e) }
+    }
+
     fun cancel(key: String) = manager.cancel(key, ID)
 
     companion object {
+        const val ART_BRAKE = "brake"
+        const val ACTION_EMOTE = "com.hyperconnect.app.EMOTE_FROM_NOTIFICATION"
         private const val CHANNEL = "road_alerts"
         private const val ID = 100
     }
