@@ -4,7 +4,7 @@
 01_hard_brake_feedback 8
 02_secondary_accident 8
 03_weather 7
-05_ev_charging 6
+05_ev_charging 7
 06_emergency 5
 07_lane_change 6
 08_consent_emote 5

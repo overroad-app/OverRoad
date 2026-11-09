@@ -1,10 +1,11 @@
 #!/bin/bash
-# EV 충전 예측 rev4 시나리오 (충전 여정: 작은 창 링 · 중간 창 막대 · 내비 위 알림 링 · 별 5개 별점)
+# EV 충전 예측 rev7 시나리오 (충전 여정: 작은 창 링 · 중간 창 막대 · 별 5개 별점)
+#   내비 위 흰 알림 링은 쓰지 않는다(2026-11-09 제거) → 출발 뒤 HyperConnect를 다시 열어 앱 안 막대로 대기 감소를 보여 준다
 #   판교역 충전소(충전기 2기): HyperConnect 차량 C가 충전 중(SoC 35%), 타사 차량 1대가 12분째 충전 중(공공 충전기 상태),
 #   가상 EV Q3도 같은 충전소로 오는 중. B가 이 충전소로 경로를 잡으면
 #     → 충전소 별점·출력, 도착 시각, 내 순번, 대기 시간, 80% 완료 시각, 충전 중인 차(타사 포함), 대안 충전소
 #   C의 충전이 끝나면 그 기록(시간·실측 출력)이 충전소 정보가 되고, C가 별점을 남긴다 → B의 카드가 바로 갱신된다
-#   (시연에서는 충전 시간을 60배 빠르게 흘린다: 실제 약 20분 → 20초)
+#   (시연에서는 충전 시간을 25배 빠르게 흘린다: 실제 약 25분 → 60초)
 # 사용: scenario_ev.sh <서버 로그 파일>
 S=$(cd "$(dirname "$0")" && pwd)
 HC=$(cd "$S/../.." && pwd)
@@ -18,7 +19,7 @@ PANGYO="--ed fix_lat 37.4020 --ed fix_lon 127.1080"
 
 bash $S/stop_fleet.sh
 N=$(wc -l < $SL)
-api /demo '{"charge_time_scale": 60}'
+api /demo '{"charge_time_scale": 25}'  # 충전 시작~완료가 실제 약 60초 → 25분·약 84kW로 기록 (60배면 35kW로 낮게 잡혀 예측이 늦어짐)
 # 공공 충전기 상태 (환경공단 충전기 상태 API 대체): 판교역은 타사 차량 1대가 12분째 충전 중, 시간당 1.5대 도착
 api /public_status '{"station": "PANGYO", "busy_since_min_ago": [12], "arrivals_per_hour": 1.5}'
 api /public_status '{"station": "SIHEUNG", "busy_since_min_ago": [], "arrivals_per_hour": 0.5}'
@@ -64,23 +65,20 @@ echo "--- 1) B 출발 전: 작은 창 링 → 눌러서 중간 창 막대"
 $M in -0.5; sleep 3.5
 bash $S/tap.sh emulator-5554 "자세히"; sleep 3.5; $M out   # 링을 누르는 것과 같다 (중간 크기)
 $ADB -s emulator-5554 exec-out screencap -p > "$SHOT/ev4_b_bar.png"
-echo "--- 2) B 출발 (50km/h): 앱은 내비로 물러나고, 이후 안내는 내비 위 알림 링"
+echo "--- 2) B 출발 (50km/h): 앱은 내비로 물러난다 → 다시 열어 중간 창 막대로 (주행 중 최대 크기)"
 $VC --port 8088 drive 50 >/dev/null
 sleep 3
-echo "--- C 충전 진행 35% → 80% (60배속)"
+$ADB -s emulator-5554 shell am start -n com.hyperconnect.app/.MainActivity >/dev/null; sleep 2
+bash $S/tap.sh emulator-5554 "자세히"; sleep 1.5
+echo "--- C 충전 진행 35% → 80% (25배속)"
 for soc in 44 53 62 71 80; do $VC --port 8089 soc $soc >/dev/null; sleep 3.5; done
 $M in -0.3
-$VC --port 8089 charge off >/dev/null       # C 충전 완료 → B의 대기가 줄어 내비 위 알림 링
+$VC --port 8089 charge off >/dev/null       # C 충전 완료 → B의 막대에서 대기가 줄고 완료 시각이 당겨진다
 sleep 5; $M out
-$ADB -s emulator-5554 exec-out screencap -p > "$SHOT/ev4_b_nav.png"
+$ADB -s emulator-5554 exec-out screencap -p > "$SHOT/ev7_b_drive_bar.png"
 echo "--- 3) C: 완료 알림이 사라진 뒤 별 5개 별점 → ★4"
 bash $S/wait_log.sh emulator-5556 "충전 완료" 5; sleep 1.5
 $M in -0.3; sleep 1; tapdesc emulator-5556 "별 4개"; sleep 2; $M out
-echo "--- 4) B: 주행 중 다시 열면 중간 크기까지 → 막대의 '지금' 점이 움직인다"
-$ADB -s emulator-5554 shell am start -n com.hyperconnect.app/.MainActivity >/dev/null; sleep 2
-bash $S/tap.sh emulator-5554 "자세히"; sleep 1.5
-$M in -0.3; sleep 4; $M out
-$ADB -s emulator-5554 exec-out screencap -p > "$SHOT/ev4_b_drive_bar.png"
 
 echo "== server"; tail -n +$((N+1)) $SL | grep -E "\[charg|\[rating\]" | head -12
 echo "== B"; $ADB -s emulator-5554 logcat -d | grep -E "충전 예측" | sed 's/.*HyperConnect: //' | tail -3
