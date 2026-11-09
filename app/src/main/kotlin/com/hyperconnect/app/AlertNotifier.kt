@@ -165,9 +165,12 @@ class AlertNotifier(private val context: Context) {
             .setOngoing(true)
             .setOnlyAlertOnce(!popUp)
             .setCategory(Notification.CATEGORY_NAVIGATION)
-            .addAction(action("👍 뒤차에 고마워요", "thanks", false, 11))
-            .addAction(action("🙏 미안해요", "sorry", false, 12))
-            .addAction(action("👍 앞차에 고마워요", "thanks", true, 13))
+            // 버튼 폭이 좁아 한 줄로: 이모지가 표현(👍 고마워요 · 🙏 미안해요), 화살표가 받는 차.
+            // Pleos는 버튼을 오른쪽부터(먼저 넣은 것이 맨 오른쪽) 오른쪽→왼쪽 글자 방향으로 그린다
+            // → 거꾸로 넣어 화면에서 앞차·미안·뒤차 순서가 되게 하고, 맨 앞 LRM(\u200E)으로 이모지가 뒤로 밀리지 않게 한다.
+            .addAction(action("\u200E👍 ▼뒤차", "thanks", false, 11))
+            .addAction(action("\u200E🙏 ▼뒤차", "sorry", false, 12))
+            .addAction(action("\u200E👍 ▲앞차", "thanks", true, 13))
             .build()
         try { manager.notify("controls", ID, n) } catch (e: SecurityException) { Log.w("HyperConnect", "알림 권한 없음", e) }
     }

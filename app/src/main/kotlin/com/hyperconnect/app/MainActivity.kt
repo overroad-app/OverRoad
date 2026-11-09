@@ -1249,8 +1249,15 @@ class MainActivity : Activity() {
     // 정차 중 한 번 탭으로 보낼 수 있도록 큰 버튼 세 개만 둔다. 버튼 색은 내 이모트 팩 색
     private val emoteButtons = mutableListOf<Button>()
 
-    private fun emoteButton(label: String, name: String, toAhead: Boolean) = Button(this).apply {
-        text = label
+    private fun emoteButton(emoji: String, word: String, name: String, toAhead: Boolean) = Button(this).apply {
+        val target = if (toAhead) "▲ 앞차" else "▼ 뒤차"
+        val label = "$emoji $word · ${target.drop(2)}에게"
+        // 접힌 시트는 버튼 높이가 한 줄뿐이라 받는 차를 같은 줄 뒤에 작게 붙인다
+        text = android.text.SpannableString("$emoji $word  $target").apply {
+            val from = length - target.length
+            setSpan(android.text.style.RelativeSizeSpan(0.8f), from, length, 0)
+            setSpan(android.text.style.ForegroundColorSpan(Color.argb(210, 255, 255, 255)), from, length, 0)
+        }
         isAllCaps = false
         setTextColor(Color.WHITE)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
@@ -1414,9 +1421,10 @@ class MainActivity : Activity() {
         emoteBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(16, 2, 16, 22)
-            addView(emoteButton("👍 뒤차에 고마워요", "thanks", toAhead = false))
-            addView(emoteButton("🙏 뒤차에 미안해요", "sorry", toAhead = false))
-            addView(emoteButton("👍 앞차에 고마워요", "thanks", toAhead = true))
+            // 순서·문구는 알림 버튼(AlertNotifier.showControls)·컨셉아트와 같게: 표현 + 받는 차
+            addView(emoteButton("👍", "고마워요", "thanks", toAhead = true))
+            addView(emoteButton("🙏", "미안해요", "sorry", toAhead = false))
+            addView(emoteButton("👍", "고마워요", "thanks", toAhead = false))
         }
         paintEmoteButtons()
         offlineView = TextView(this).apply {

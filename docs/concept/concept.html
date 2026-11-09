@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  html,body{margin:0;width:2560px;height:1440px;overflow:hidden;background:#000;
+    font-family:-apple-system,"Apple SD Gothic Neo",sans-serif;}
+  .bg{position:absolute;inset:0;background:url(base.png) 0 0/2560px 1440px no-repeat;}
+  .glass{position:absolute;background:rgba(255,255,255,.72);
+    backdrop-filter:blur(28px) saturate(1.6);-webkit-backdrop-filter:blur(28px) saturate(1.6);
+    border:1.5px solid rgba(255,255,255,.9);
+    box-shadow:0 18px 50px rgba(15,23,42,.18),0 2px 6px rgba(15,23,42,.08);}
+  /* 충전 링 카드 */
+  .ring{left:1788px;top:118px;width:580px;height:196px;border-radius:40px;display:flex;align-items:center;padding:0 30px;box-sizing:border-box;gap:28px}
+  .ring svg{flex:none}
+  .ring .t1{font-size:34px;font-weight:700;color:#1e293b;letter-spacing:-.5px}
+  .ring .t2{font-size:26px;color:#64748b;margin-top:8px}
+  .ring .t2 b{color:#0f6e56}
+  .legend{display:flex;gap:16px;margin-top:14px;font-size:21px;color:#64748b}
+  .legend i{display:inline-block;width:14px;height:14px;border-radius:7px;margin-right:6px;vertical-align:-1px}
+  /* 이모트 바 */
+  .emote{left:1500px;top:1156px;width:890px;height:128px;border-radius:64px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;box-sizing:border-box}
+  .btn{height:102px;border-radius:51px;display:flex;align-items:center;justify-content:center;gap:14px;
+    font-size:30px;font-weight:600;color:#1e293b;background:rgba(255,255,255,.85);border:1.5px solid rgba(15,23,42,.08);flex:1;margin:0 6px}
+  .btn.primary{background:#0f172a;color:#fff;border-color:#0f172a}
+  .btn span{font-size:44px}
+  .btn .l{display:flex;flex-direction:column;line-height:1.1}
+  .btn .to{font-size:22px;font-weight:600;color:#64748b;margin-top:4px}
+  .btn.primary .to{color:#94a3b8}
+  .logo{width:66px;height:66px;border-radius:33px;background:#0f6e56;display:flex;align-items:center;justify-content:center;flex:none;margin-left:4px}
+  /* 컨셉 표시 */
+  .tag{position:absolute;left:1788px;top:336px;padding:12px 24px;border-radius:26px;background:rgba(15,23,42,.82);color:#fff;font-size:22px;font-weight:600;letter-spacing:.3px}
+  .tag small{color:#5dcaa5;font-weight:700;margin-right:10px}
+  .callout{position:absolute;font-size:22px;color:#0f172a;background:#fde68a;padding:8px 16px;border-radius:12px;font-weight:600}
+</style></head>
+<body>
+<div class="bg"></div>
+
+<div class="tag"><small>CONCEPT</small>Tier 2+ · OS가 작은 영역을 열어 줄 때</div>
+
+<div class="glass ring">
+  <svg width="150" height="150" viewBox="0 0 150 150">
+    <!-- 반시계: 12시에서 시작해 좌우 반전 -->
+    <g transform="translate(150,0) scale(-1,1) rotate(-90 75 75)" fill="none" stroke-width="15">
+      <circle cx="75" cy="75" r="58" stroke="#e9e7e1"/>
+      <!-- 둘레 364.4 / 주행 0~.19, 대기 .19~.36, 충전 .36~1 (틈 .008) -->
+      <circle cx="75" cy="75" r="58" stroke="#cbc8c0" stroke-dasharray="63.4 400" stroke-dashoffset="-2.9"/>
+      <circle cx="75" cy="75" r="58" stroke="#444441" stroke-dasharray="14 400" stroke-dashoffset="-2.9"/>
+      <circle cx="75" cy="75" r="58" stroke="#fac775" stroke-dasharray="56.1 400" stroke-dashoffset="-72.1"/>
+      <circle cx="75" cy="75" r="58" stroke="#5dcaa5" stroke-dasharray="227.4 400" stroke-dashoffset="-134.1"/>
+    </g>
+    <text x="75" y="66" text-anchor="middle" font-size="18" fill="#64748b">완료</text>
+    <text x="75" y="96" text-anchor="middle" font-size="32" font-weight="700" fill="#0f6e56">04:27</text>
+  </svg>
+  <div>
+    <div class="t1">판교역 충전소</div>
+    <div class="t2">도착 3:58 · 대기 <b>6분</b> · 50kW</div>
+    <div class="legend"><span><i style="background:#cbc8c0"></i>주행</span><span><i style="background:#fac775"></i>대기</span><span><i style="background:#5dcaa5"></i>충전</span></div>
+  </div>
+</div>
+
+<div class="glass emote">
+  <div class="logo">
+    <svg width="36" height="36" viewBox="0 0 36 36"><path d="M9 18.5l6 6 12-13" stroke="#fff" stroke-width="4.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+  <div class="btn primary"><span>👍</span><div class="l">고마워요<div class="to">▲ 앞차에게</div></div></div>
+  <div class="btn"><span>🙏</span><div class="l">미안해요<div class="to">▼ 뒤차에게</div></div></div>
+  <div class="btn"><span>👍</span><div class="l">고마워요<div class="to">▼ 뒤차에게</div></div></div>
+</div>
+</body></html>
