@@ -9,7 +9,7 @@
 unzip -q HyperConnect_접수양식_1023백업.docx -d /tmp/form_src
 cp -R /tmp/form_src /tmp/form_out
 python3 docs/proposal/build_form.py /tmp/form_src/word/document.xml /tmp/form_out/word/document.xml docs/proposal/content.py
-(cd /tmp/form_out && zip -qXr ../HyperConnect_접수양식_new.docx .)
+(cd /tmp/form_out && zip -qXr ../OverRoad_접수양식.docx .)
 ```
 
 접수양식 Word 파일 자체는 개인정보(참가 정보·서명)를 적게 되므로 저장소에 올리지 않는다.

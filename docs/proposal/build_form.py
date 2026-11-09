@@ -30,12 +30,17 @@ def render(lines):
         else: out.append(body(l))
     return ''.join(out)
 
-exec(open(sys.argv[3], encoding='utf-8').read())  # SECTIONS = [list of lines] x 6
+exec(open(sys.argv[3], encoding='utf-8').read())  # SECTIONS = [list of lines] x 6~7
+APP_NAME = 'OverRoad'
+# 앱명 / 프로젝트명 칸 (01 참가신청서, 02 소개 머리말 두 곳)
+x = x.replace('프로젝트명: HyperConnect', '프로젝트명: ' + APP_NAME).replace('>HyperConnect<', '>' + APP_NAME + '<')
+assert 'HyperConnect' not in x, '양식에 가제가 남아 있음'
 
 # 1~6번 작성란 = 문서의 2~7번째 표. 각 표 셀의 문단들을 새 내용으로 바꾼다.
 tbls = [m for m in re.finditer(r'<w:tbl>.*?</w:tbl>', x, flags=re.S)]
 assert len(tbls) == 10, len(tbls)
-for k in range(6, 0, -1):  # 뒤에서부터 바꿔야 앞쪽 위치가 유지된다
+# 1~6번 + (원고에 있으면) 7번 참고자료 = 2~8번째 표
+for k in range(len(SECTIONS), 0, -1):  # 뒤에서부터 바꿔야 앞쪽 위치가 유지된다
     t = tbls[k]
     tb = t.group()
     tcs = re.findall(r'<w:tc>.*?</w:tc>', tb, flags=re.S)
