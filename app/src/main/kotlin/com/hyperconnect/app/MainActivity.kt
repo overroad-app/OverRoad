@@ -88,8 +88,6 @@ class MainActivity : Activity() {
     private var trip: Trip? = null
     private var tripStation: String? = null
     private var tripStartMs = 0L
-    private var announcedWait = -1
-    private var nearAnnounced = false
     private var ratingReadyAtMs = 0L
     private val ratingStars = mutableListOf<TextView>()
     private lateinit var surround: SurroundView   // 연결망 시각화: 정차 중 전체 화면의 배경
@@ -485,7 +483,6 @@ class MainActivity : Activity() {
         releaseFocus.run()
         uxManager?.unregisterListener()
         unregisterReceiver(laneReceiver)
-        unregisterReceiver(controlsReceiver)
         client?.stop()
         naviTracker?.stop()
         propertyManager?.unregisterCallback(speedCallback)
@@ -669,9 +666,9 @@ class MainActivity : Activity() {
     }
 
     private fun popup(key: String, title: String, text: String, color: Int, ms: Long, onlyOnce: Boolean = false,
-                      fg: Int = Color.WHITE, stripe: IntArray? = null, art: String? = null, picture: android.graphics.Bitmap? = null) {
+                      fg: Int = Color.WHITE, stripe: IntArray? = null, art: String? = null) {
         // 경고·안내는 앱이 앞에 있든 없든 OS(Pleos) 상단 알림 한 가지로 띄운다 (OS와 같은 모양, 아이콘만 HyperConnect)
-        notifier.show(key, title, text, color, ms, onlyOnce, fg = fg, stripe = stripe, art = art, picture = picture)
+        notifier.show(key, title, text, color, ms, onlyOnce, fg = fg, stripe = stripe, art = art)
     }
 
     /** 사고 정체 (2차 사고 방지 rev2): 멀리 있는 사고·정차 지점과 그 뒤 정체 꼬리를 짧은 카드로 알린다. */
@@ -709,7 +706,7 @@ class MainActivity : Activity() {
         lastForecast = c
         val now = System.currentTimeMillis()
         val newTrip = tripStation != c.stationId
-        if (newTrip) { tripStation = c.stationId; tripStartMs = now; announcedWait = -1; nearAnnounced = false }
+        if (newTrip) { tripStation = c.stationId; tripStartMs = now }
         val t = Trip(c.station, c.operator, c.rating, c.ratingN, c.kw, c.free, c.stalls, c.socArrival, c.known, c.estimated,
             kotlin.math.min(tripStartMs, c.etaMs), c.etaMs, c.startMs, c.doneMs)
         trip = t
@@ -717,18 +714,8 @@ class MainActivity : Activity() {
             tripBar.trip = t; tripPill.trip = t
             renderInfoRows(); updateTripPill()
         }
-        // 내비가 앞에 있어도 볼 수 있게, 중요한 순간에만 OS 상단 알림 (아이콘 자리에 같은 링)
-        //   출발(경로를 잡음) · 대기가 3분 이상 바뀜 · 도착 1분 30초 전
-        val near = !nearAnnounced && c.etaMs - now in 0..90_000
-        val waitChanged = announcedWait >= 0 && kotlin.math.abs(c.waitMin - announcedWait) >= 3
-        if (newTrip || waitChanged || near) {
-            if (near) nearAnnounced = true
-            announcedWait = c.waitMin
-            val title = "⚡ ${c.station} · " + if (c.waitMin > 0) "대기 ${c.waitMin}분" else "바로 충전"
-            val text = (if (near) "곧 도착 · " else "도착 ${hm(c.etaMs)} → ") + "완료 ${hm(c.doneMs)}" +
-                (c.altName?.let { " · 더 빨리 끝나는 곳: $it" } ?: "")
-            popup("charging", title, text, COLOR_CHARGING, INFO_ALERT_MS, picture = TripView.ringBitmap(t, now))
-        }
+        // 충전 링은 앱 안(이모트 바 위 알약·가로 막대)에서만 보인다. 내비 위 상단 알림으로는 띄우지 않는다
+        //   (내비 위 상시 링은 Tier 2+ 컨셉 이미지: docs/concept)
     }
 
     /** 작은 창일 때만 이모트 바 위 알약 링을 보인다. 누르면 중간 크기(가로 막대)로. */
@@ -973,13 +960,12 @@ class MainActivity : Activity() {
         val who = if (e.fromAhead) "앞차" else "뒤차"
         val caption = if (e.pack == "emergency") "지나간 긴급차량이 길을 열어 줘서 고맙대요" else "$who${EMOTE_RECEIVED[e.name] ?: ""}"
         playSound(e.pack, e.name)
-        if (isSlow()) {
+        if (isSlow() && inFront) {
             Log.i(TAG, "이모트 수신: ${e.symbol} $caption · ${e.packName} 팩")
-            if (inFront) animateEmote(e, caption)
-            else notifier.show("emote", "${e.symbol} $caption", "${e.packName} 팩",
-                EmotePacks.of(e.pack).colorTop, EMOTE_SHOW_MS)
+            animateEmote(e, caption)
         } else {
-            // 주행 중에는 화면을 띄우지 않는다. 소리만 들려주고 정차하면 모아서 보여준다
+            // 주행 중이거나 내비가 앞에 있으면 화면을 띄우지 않는다(상단 알림도 쓰지 않음).
+            // 소리만 들려주고, 정차 중 앱이 앞에 오면 모아서 보여준다
             Log.i(TAG, "이모트 수신 (소리만): ${e.symbol} $caption · ${e.packName} 팩")
             unseenEmotes += e.symbol
         }
@@ -1080,10 +1066,10 @@ class MainActivity : Activity() {
         tripPill.translationY = if (sheet.compact) (AssistantSheet.MINI_H - AssistantSheet.COMPACT_H).toFloat() else 0f
         if (!slow) mergeThanksButton.visibility = View.GONE
         if (!isBusy()) pendingEmotes.removeFirstOrNull()?.let { playEmote(it) }
-        if (slow && unseenEmotes.isNotEmpty() && emoteCard.visibility != View.VISIBLE) {
+        if (slow && inFront && unseenEmotes.isNotEmpty() && emoteCard.visibility != View.VISIBLE) {
             Log.i(TAG, "정차 후 이모트 표시: ${unseenEmotes.joinToString(" ")}")
             val seen = "주행 중 받은 이모트  ${unseenEmotes.joinToString(" ")}"
-            if (inFront) showEmoteBanner(seen) else notifier.show("emote", "${unseenEmotes.first()} $seen", "운전 중이라 소리로만 전해 드렸어요", Color.rgb(30, 140, 80), EMOTE_SHOW_MS)
+            showEmoteBanner(seen)
             unseenEmotes.clear()
         }
         if (pendingRating != null) ratingBar.visibility =
@@ -1211,26 +1197,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 알림 버튼으로 보낸 이모트 (주행 중 조작판 실험). 시연용 TEST_CONTROLS 브로드캐스트로 조작판을 띄운다. */
-    private val controlsReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == ACTION_TEST_CONTROLS) {
-                val t = trip
-                notifier.showControls("HyperConnect", t?.let { "${it.station} · 완료 ${TripView.hm(it.doneMs)}" } ?: "주변 ${nearby?.connected ?: 0}대 연결",
-                    t?.let { TripView.ringBitmap(it, System.currentTimeMillis()) }, popUp = true)
-                return
-            }
-            val emote = intent.getStringExtra("emote") ?: return
-            val ahead = intent.getBooleanExtra("ahead", false)
-            Log.i(TAG, "알림 버튼으로 이모트: $emote ${if (ahead) "앞차" else "뒤차"}")
-            client?.sendEmote(emote, toAhead = ahead) { r -> update("마지막 이모트", "알림 버튼 · $r") }
-        }
-    }
-
     private fun registerLaneReceiver() {
-        val cf = IntentFilter(AlertNotifier.ACTION_EMOTE).apply { addAction(ACTION_TEST_CONTROLS) }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) registerReceiver(controlsReceiver, cf, Context.RECEIVER_EXPORTED)
-        else registerReceiver(controlsReceiver, cf)
         val filter = IntentFilter(ACTION_SET_LANE).apply { addAction(ACTION_CANCEL_ROUTE) }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(laneReceiver, filter, Context.RECEIVER_EXPORTED)
@@ -1421,7 +1388,7 @@ class MainActivity : Activity() {
         emoteBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(16, 2, 16, 22)
-            // 순서·문구는 알림 버튼(AlertNotifier.showControls)·컨셉아트와 같게: 표현 + 받는 차
+            // 순서·문구는 컨셉 이미지(docs/concept)와 같게: 표현 + 받는 차
             addView(emoteButton("👍", "고마워요", "thanks", toAhead = true))
             addView(emoteButton("🙏", "미안해요", "sorry", toAhead = false))
             addView(emoteButton("👍", "고마워요", "thanks", toAhead = false))
@@ -1586,7 +1553,6 @@ class MainActivity : Activity() {
         private const val LANE_SHOW_MS = 5000L
         private const val MERGE_THANKS_SHOW_MS = 5000L
         private const val ACTION_SET_LANE = "com.hyperconnect.app.SET_LANE"
-        private const val ACTION_TEST_CONTROLS = "com.hyperconnect.app.TEST_CONTROLS"
         private const val ACTION_CANCEL_ROUTE = "com.hyperconnect.app.CANCEL_ROUTE"  // 시연용: 경로 안내 종료
         private const val RED_ALERT_M = 300
         private const val NAVI_PACKAGE = "ai.umos.maps.android.navigation.app"

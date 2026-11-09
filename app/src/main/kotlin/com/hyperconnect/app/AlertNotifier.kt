@@ -37,8 +37,7 @@ class AlertNotifier(private val context: Context) {
 
     /** [key]가 같으면 같은 알림을 갱신한다 (예: 긴급차량 접근 거리). [timeoutMs]가 지나면 저절로 사라진다. */
     fun show(key: String, title: String, text: String, color: Int, timeoutMs: Long, onlyOnce: Boolean = false,
-             icon: Int = android.R.drawable.ic_dialog_alert, fg: Int = Color.WHITE, stripe: IntArray? = null, art: String? = null,
-             picture: Bitmap? = null) {
+             icon: Int = android.R.drawable.ic_dialog_alert, fg: Int = Color.WHITE, stripe: IntArray? = null, art: String? = null) {
         val open = PendingIntent.getActivity(
             context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_IMMUTABLE,
@@ -49,7 +48,6 @@ class AlertNotifier(private val context: Context) {
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setLargeIcon(when {
-                picture != null -> picture.copy(Bitmap.Config.ARGB_8888, true).let { b -> drawMark(Canvas(b), b.width.toFloat()); Icon.createWithBitmap(b) }
                 art == ART_BRAKE -> brakeBadge(color)
                 else -> badge(color, fg, stripe, title.substringBefore(" "))
             })
@@ -146,40 +144,10 @@ class AlertNotifier(private val context: Context) {
         c.drawPath(path, p)
     }
 
-    /**
-     * 주행 중 조작판 (실험, 2026-11-08): 내비를 가리지 않고 쓰도록 OS 알림 하나에 충전 링(큰 아이콘)과 이모트 버튼 3개를 단다.
-     * 계속 남는 알림(ongoing)이라 알림 센터에서 언제든 열 수 있고, 처음 한 번은 상단 알림으로 뜬다.
-     * Pleos가 알림의 버튼을 그려 주는지 시험하기 위한 것.
-     */
-    fun showControls(title: String, text: String, picture: Bitmap?, popUp: Boolean) {
-        fun action(label: String, emote: String, ahead: Boolean, req: Int) = Notification.Action.Builder(
-            null as Icon?, label,
-            PendingIntent.getBroadcast(context, req, Intent(ACTION_EMOTE).setPackage(context.packageName)
-                .putExtra("emote", emote).putExtra("ahead", ahead), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT),
-        ).build()
-        val n = Notification.Builder(context, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(text)
-            .apply { picture?.let { setLargeIcon(Icon.createWithBitmap(it)) } }
-            .setOngoing(true)
-            .setOnlyAlertOnce(!popUp)
-            .setCategory(Notification.CATEGORY_NAVIGATION)
-            // 버튼 폭이 좁아 한 줄로: 이모지가 표현(👍 고마워요 · 🙏 미안해요), 화살표가 받는 차.
-            // Pleos는 버튼을 오른쪽부터(먼저 넣은 것이 맨 오른쪽) 오른쪽→왼쪽 글자 방향으로 그린다
-            // → 거꾸로 넣어 화면에서 앞차·미안·뒤차 순서가 되게 하고, 맨 앞 LRM(\u200E)으로 이모지가 뒤로 밀리지 않게 한다.
-            .addAction(action("\u200E👍 ▼뒤차", "thanks", false, 11))
-            .addAction(action("\u200E🙏 ▼뒤차", "sorry", false, 12))
-            .addAction(action("\u200E👍 ▲앞차", "thanks", true, 13))
-            .build()
-        try { manager.notify("controls", ID, n) } catch (e: SecurityException) { Log.w("HyperConnect", "알림 권한 없음", e) }
-    }
-
     fun cancel(key: String) = manager.cancel(key, ID)
 
     companion object {
         const val ART_BRAKE = "brake"
-        const val ACTION_EMOTE = "com.hyperconnect.app.EMOTE_FROM_NOTIFICATION"
         private const val CHANNEL = "road_alerts"
         private const val ID = 100
     }

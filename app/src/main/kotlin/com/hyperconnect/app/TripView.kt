@@ -215,20 +215,5 @@ class TripView(context: Context, private val mode: Mode) : View(context) {
             seg(fc, 1f, CHARGE, CHARGE_DARK)
             p.style = Paint.Style.FILL
         }
-
-        /** 내비가 앞에 있을 때 OS 흰 알림의 아이콘 자리에 넣는 링 그림 (정지 그림이라 가운데는 가장 중요한 완료 시각). */
-        fun ringBitmap(tr: Trip, now: Long, size: Int = 128): Bitmap {
-            val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-            val c = Canvas(bmp)
-            val p = Paint(Paint.ANTI_ALIAS_FLAG)
-            p.color = Color.WHITE
-            c.drawRoundRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), 26f, 26f, p)
-            drawRing(c, size / 2f, size / 2f, size / 2f - 16f, 11f, tr, now, p)
-            val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
-            t.textSize = 13f; t.color = MUTED; c.drawText("완료", size / 2f, size / 2f - 6f, t)
-            t.textSize = 24f; t.typeface = Typeface.DEFAULT_BOLD; t.color = CHARGE_DARK
-            c.drawText(hm(tr.doneMs), size / 2f, size / 2f + 18f, t)
-            return bmp
-        }
     }
 }
