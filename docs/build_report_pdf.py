@@ -130,6 +130,7 @@ PARTS = [
     ("3부. 기술 리포트 — 판별 로직", lambda: md_to_html((DOCS / "technical_report.md").read_text(), 1)),
     ("4부. 기능별 개선 기록 · 기존 서비스 비교", lambda: md_to_html((DOCS / "feature_revisions.md").read_text(), 1)),
     ("5부. 급제동 경고 지연시간 실측", lambda: md_to_html((DOCS / "latency.md").read_text(), 1)),
+    ("6부. 예상 MAU · Retention Rate 산정", lambda: md_to_html((DOCS / "metrics.md").read_text(), 1)),
 ]
 
 CSS = """
@@ -162,7 +163,7 @@ def main():
     body = [f"""<div class="cover"><h1>OverRoad</h1>
 <div class="sub">점유율 기반 차량 간 연결망 · 보편적인 모빌리티 경험</div>
 <div class="meta">현대자동차그룹 차량용 앱 개발 공모전 출품작 통합보고서<br>
-기획서 · 철학과 Tier별 기능 · 기술 리포트 · 개선 기록 · 실측<br>작성 {time.strftime('%Y-%m-%d')}<br>
+기획서 · 철학과 Tier별 기능 · 기술 리포트 · 개선 기록 · 실측 · MAU 산정<br>작성 {time.strftime('%Y-%m-%d')}<br>
 이름 OverRoad(오버로드): 도로 위(Over the Road)에서 모든 차를 내려다보며 잇는 연결망</div></div>""",
             "<div class='toc'><h2>목차</h2><ol>" + "".join(f"<li>{t}</li>" for t, _ in PARTS) + "</ol></div>"]
     for title, make in PARTS:
