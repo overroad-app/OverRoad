@@ -87,6 +87,6 @@ class ChargerMapView(context: Context) : View(context) {
             canvas.drawCircle(28f + i * 120f, ly - 8f, 10f, fill)
             canvas.drawText(label, 46f + i * 120f, ly, legend)
         }
-        canvas.drawText("○ 굵은 테두리 = 목적지 · 별점은 HyperConnect 운전자가 충전 후 남긴 평가", 400f, ly, legend)
+        canvas.drawText("○ 굵은 테두리 = 목적지 · 별점은 OverRoad 운전자가 충전 후 남긴 평가", 400f, ly, legend)
     }
 }

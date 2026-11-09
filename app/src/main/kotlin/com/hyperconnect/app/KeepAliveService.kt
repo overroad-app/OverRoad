@@ -20,10 +20,10 @@ class KeepAliveService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "HyperConnect 동작 상태", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL, "OverRoad 동작 상태", NotificationManager.IMPORTANCE_LOW)
         )
         val notification = Notification.Builder(this, CHANNEL)
-            .setContentTitle("HyperConnect 동작 중")
+            .setContentTitle("OverRoad 동작 중")
             .setContentText("주변 차량의 위험 경고를 받고 있어요")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)

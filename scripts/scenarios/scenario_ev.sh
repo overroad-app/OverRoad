@@ -1,7 +1,7 @@
 #!/bin/bash
 # EV 충전 예측 rev7 시나리오 (충전 여정: 작은 창 링 · 중간 창 막대 · 별 5개 별점)
-#   내비 위 흰 알림 링은 쓰지 않는다(2026-11-09 제거) → 출발 뒤 HyperConnect를 다시 열어 앱 안 막대로 대기 감소를 보여 준다
-#   판교역 충전소(충전기 2기): HyperConnect 차량 C가 충전 중(SoC 35%), 타사 차량 1대가 12분째 충전 중(공공 충전기 상태),
+#   내비 위 흰 알림 링은 쓰지 않는다(2026-11-09 제거) → 출발 뒤 OverRoad를 다시 열어 앱 안 막대로 대기 감소를 보여 준다
+#   판교역 충전소(충전기 2기): OverRoad 차량 C가 충전 중(SoC 35%), 타사 차량 1대가 12분째 충전 중(공공 충전기 상태),
 #   가상 EV Q3도 같은 충전소로 오는 중. B가 이 충전소로 경로를 잡으면
 #     → 충전소 별점·출력, 도착 시각, 내 순번, 대기 시간, 80% 완료 시각, 충전 중인 차(타사 포함), 대안 충전소
 #   C의 충전이 끝나면 그 기록(시간·실측 출력)이 충전소 정보가 되고, C가 별점을 남긴다 → B의 카드가 바로 갱신된다
@@ -57,7 +57,7 @@ tapdesc() {  # tapdesc <기기> <content-desc> — 같은 글자가 여러 개�
   $ADB -s $1 shell input tap $(( (x1+x2)/2 )) $(( (y1+y2)/2 ))
 }
 M="bash $S/mark.sh"
-# 경로를 잡으면 내비가 앞으로 나온다. 출발 전 HyperConnect를 열면 이모트 바 위에 충전 여정 링(작은 창)
+# 경로를 잡으면 내비가 앞으로 나온다. 출발 전 OverRoad를 열면 이모트 바 위에 충전 여정 링(작은 창)
 $ADB -s emulator-5556 shell am start -n com.hyperconnect.app/.MainActivity >/dev/null
 $ADB -s emulator-5554 shell am start -n com.hyperconnect.app/.MainActivity >/dev/null
 sleep 1

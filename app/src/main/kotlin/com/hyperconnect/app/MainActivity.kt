@@ -68,7 +68,7 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * HyperConnect 프로토타입: 차량 신호로 급제동·정차·사고·기상 상황을 감지해 서버에 보고하고,
+ * OverRoad 프로토타입: 차량 신호로 급제동·정차·사고·기상 상황을 감지해 서버에 보고하고,
  * 다른 차량이 보고해 확정된 경고를 받아 표시한다.
  *
  * 위치는 내비 위치를 기준으로 차량 속도를 적분해 추정한다 ([PositionEstimator]).
@@ -680,9 +680,9 @@ class MainActivity : Activity() {
 
     private fun popup(key: String, title: String, text: String, color: Int, ms: Long, onlyOnce: Boolean = false,
                       fg: Int = Color.WHITE, stripe: IntArray? = null, art: String? = null) {
-        // 경고·안내는 OS 상단 알림과 같은 흰 카드 한 가지 모양 (아이콘만 HyperConnect, 초록 체크).
+        // 경고·안내는 OS 상단 알림과 같은 흰 카드 한 가지 모양 (아이콘만 OverRoad, 초록 체크).
         //  - 내비가 앞에 있으면: OS(Pleos) 상단 알림 — 위치는 OS가 정해 바꿀 수 없다
-        //  - HyperConnect가 앞에 있으면: 앱이 같은 모양의 카드를 앱 화면 상단 정중앙에 직접 그린다 (2026-11-09)
+        //  - OverRoad가 앞에 있으면: 앱이 같은 모양의 카드를 앱 화면 상단 정중앙에 직접 그린다 (2026-11-09)
         //  감정표현 받지 않기와 상관없이 주의·경고는 늘 뜬다.
         if (inFront) {
             notifier.cancel(key)
@@ -1541,7 +1541,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(36, 0, 20, 4)
             addView(TextView(this@MainActivity).apply {
-                text = "HyperConnect"
+                text = "OverRoad"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
                 setTextColor(Color.rgb(22, 50, 79))
                 typeface = Typeface.DEFAULT_BOLD

@@ -1,9 +1,9 @@
-"""HyperConnect 통합보고서 PDF 만들기.
+"""OverRoad 통합보고서 PDF 만들기.
 
 철학·Tier 표, 기획서(접수양식 02장 원고), 기술 리포트, 기능 개선 기록, 지연시간 실측을 HTML 한 장으로 묶고
 Chrome 헤드리스로 PDF를 만든다. (이 컴퓨터에는 pandoc·LibreOffice가 없어 간단한 마크다운 변환을 직접 한다)
 
-  python3 -I docs/build_report_pdf.py   → docs/HyperConnect_통합보고서.pdf
+  python3 -I docs/build_report_pdf.py   → docs/OverRoad_통합보고서.pdf
 """
 import html
 import re
@@ -14,7 +14,7 @@ from pathlib import Path
 
 DOCS = Path(__file__).resolve().parent
 OUT_HTML = DOCS / "_report.html"
-OUT_PDF = DOCS / "HyperConnect_통합보고서.pdf"
+OUT_PDF = DOCS / "OverRoad_통합보고서.pdf"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
@@ -125,7 +125,7 @@ def proposal_html():
 
 
 PARTS = [
-    ("1부. HyperConnect가 지향하는 것 · Tier별 기능 구분", lambda: md_to_html((DOCS / "philosophy.md").read_text(), 1)),
+    ("1부. OverRoad가 지향하는 것 · Tier별 기능 구분", lambda: md_to_html((DOCS / "philosophy.md").read_text(), 1)),
     ("2부. 기획서 (접수양식 02장 · 앱 프로젝트 소개)", proposal_html),
     ("3부. 기술 리포트 — 판별 로직", lambda: md_to_html((DOCS / "technical_report.md").read_text(), 1)),
     ("4부. 기능별 개선 기록 · 기존 서비스 비교", lambda: md_to_html((DOCS / "feature_revisions.md").read_text(), 1)),
@@ -159,16 +159,16 @@ hr { border: none; border-top: 1px dashed #c9d3e0; margin: 18px 0; }
 
 
 def main():
-    body = [f"""<div class="cover"><h1>HyperConnect</h1>
+    body = [f"""<div class="cover"><h1>OverRoad</h1>
 <div class="sub">점유율 기반 차량 간 연결망 · 보편적인 모빌리티 경험</div>
 <div class="meta">현대자동차그룹 차량용 앱 개발 공모전 출품작 통합보고서<br>
 기획서 · 철학과 Tier별 기능 · 기술 리포트 · 개선 기록 · 실측<br>작성 {time.strftime('%Y-%m-%d')}<br>
-(앱 이름 HyperConnect는 가칭)</div></div>""",
+이름 OverRoad(오버로드): 도로 위(Over the Road)에서 모든 차를 내려다보며 잇는 연결망</div></div>""",
             "<div class='toc'><h2>목차</h2><ol>" + "".join(f"<li>{t}</li>" for t, _ in PARTS) + "</ol></div>"]
     for title, make in PARTS:
         body.append(f"<h1 class='part'>{title}</h1>")
         body.append(make())
-    OUT_HTML.write_text(f"<!doctype html><html lang='ko'><head><meta charset='utf-8'><title>HyperConnect 통합보고서</title>"
+    OUT_HTML.write_text(f"<!doctype html><html lang='ko'><head><meta charset='utf-8'><title>OverRoad 통합보고서</title>"
                         f"<style>{CSS}</style></head><body>{''.join(body)}</body></html>", encoding="utf-8")
     subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
                     f"--print-to-pdf={OUT_PDF}", OUT_HTML.as_uri()], check=True,

@@ -16,5 +16,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "HyperConnect"
+rootProject.name = "OverRoad"
 include(":app")

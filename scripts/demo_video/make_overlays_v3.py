@@ -10,7 +10,7 @@ F = lambda size, bold=False: ImageFont.truetype(FONT, size, index=6 if bold else
 # 배경: 제목 + 오른쪽 패널 라벨
 bg = Image.new("RGB", (W, H), BG)
 d = ImageDraw.Draw(bg)
-d.text((24, 26), "HyperConnect 프로토타입 · 차량 간 도로 정보 공유", font=F(40, True), fill=INK)
+d.text((24, 26), "OverRoad 프로토타입 · 차량 간 도로 정보 공유", font=F(40, True), fill=INK)
 d.text((24, 78), "Pleos Connect Emulator 2대(B, C) + 가상 차량 3대(A, D, E) + 중계 서버", font=F(24), fill=QUIET)
 d.text((1228, 112), "차량 B 앱 화면 (에뮬레이터 · 2차로)", font=F(24, True), fill=INK)
 d.text((1228, 542), "차량 C 앱 화면 (에뮬레이터 · 2차로 · B 뒤 300m)", font=F(24, True), fill=INK)
@@ -48,7 +48,7 @@ def card(name, title, lines):
     im.save(f"{OUT}/{name}.png")
 
 
-card("intro", "HyperConnect", [
+card("intro", "OverRoad", [
     ("도로 위 모든 차량이 서로의 눈이 됩니다", QUIET),
     ("시연: 급제동 · 2차 사고 · 폭우 구간 공유", BLUE),
 ])

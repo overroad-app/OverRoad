@@ -1,4 +1,4 @@
-"""HyperConnect 중계 서버 (프로토타입).
+"""OverRoad 중계 서버 (프로토타입).
 
 모든 참여 차량을 고유 ID로 상시 추적하는 차량 레지스트리(로컬 다이내믹 맵의 씨앗)를 유지하고,
 차량이 보고한 이벤트를 이벤트 종류별 규칙에 따라 영향을 받는 차량에만 전파한다.
@@ -103,7 +103,7 @@ ROAD_FACTOR = 1.3        # 직선거리 → 도로 거리 어림
 PUBLIC_STALE_S = 600     # 공공 충전기 상태가 이보다 오래되면 쓰지 않는다
 public_status = {}       # 충전소 -> {"busy_since": [ts...], "arrivals_per_hour": float, "updated": ts}
                          #   환경공단 충전기 상태(충전 중·충전 시작 시각)로 타사 차량까지 반영. 시연에서는 POST /public_status로 넣는다
-station_log = defaultdict(lambda: {"sessions": [], "ratings": {}})  # 충전소 -> HyperConnect 차량의 충전 기록·별점
+station_log = defaultdict(lambda: {"sessions": [], "ratings": {}})  # 충전소 -> OverRoad 차량의 충전 기록·별점
 charge_track = {}        # 충전 중인 차량 -> {"station", "start", "soc0", "soc", "last"}
 just_finished = {}       # 방금 충전을 마친 차량 -> 충전소 (자리를 비키기 전까지 대기 차량으로 세지 않는다)
 demo = {"charge_time_scale": 1.0}  # 시연에서만: 충전 시간을 빠르게 흘려 실측 출력을 계산한다 (POST /demo)
@@ -134,7 +134,7 @@ EMOTES = {"thanks": "👍", "sorry": "🙏", "hello": "👋"}
 # 이모트 상점 (2026-11-08): 기본 · 현대차 오리지널(유료) · 특별 지급(판매 안 함, 조건 충족 시) · 창작마당(심사 통과작, 유료)
 # 유료 구매는 Pleos 결제 SDK 출시 후. 지금은 보유(무료·지급)한 팩만 장착할 수 있고, 모든 팩은 미리 들어 볼 수 있다.
 STORE = [
-    {"id": "basic", "name": "기본", "section": "basic", "maker": "HyperConnect", "price": 0},
+    {"id": "basic", "name": "기본", "section": "basic", "maker": "OverRoad", "price": 0},
     {"id": "retro", "name": "레트로 8비트", "section": "original", "maker": "현대차", "price": 2200},
     {"id": "orchestra", "name": "오케스트라", "section": "original", "maker": "현대차", "price": 2200},
     {"id": "electric", "name": "아이오닉 전자음", "section": "original", "maker": "현대차 · 차종 사운드", "price": 3300},
@@ -411,7 +411,7 @@ def weather_feed(fmt=None):
         return {"type": "FeatureCollection", "generated_at": round(now), "features": [
             {"type": "Feature", "id": i["id"], "geometry": {"type": "Point", "coordinates": [i["lon"], i["lat"]]},
              "properties": {k: v for k, v in i.items() if k not in ("lat", "lon", "id")}} for i in items]}
-    return {"source": "HyperConnect", "generated_at": round(now), "zones": items}
+    return {"source": "OverRoad", "generated_at": round(now), "zones": items}
 
 
 # ---------- HTTP ----------
@@ -628,7 +628,7 @@ def charge_seconds(soc, kw):
 
 
 def station_profile(c):
-    """충전소 정보: 실측 출력·평균 충전 시간·별점. HyperConnect 차량의 충전 기록이 쌓일수록 정확해진다."""
+    """충전소 정보: 실측 출력·평균 충전 시간·별점. OverRoad 차량의 충전 기록이 쌓일수록 정확해진다."""
     log = station_log[c["id"]]
     sessions, ratings = log["sessions"], list(log["ratings"].values())
     n = len(sessions)
@@ -648,7 +648,7 @@ def soc_on_arrival(v, c):
 def charger_state(charger, live, now, extra=None):
     """충전소의 지금 상태와, 이곳으로 향하는 차량별 도착 순번·대기·충전 완료 시각을 예측한다 (rev2).
 
-    - HyperConnect 차량: 배터리 잔량으로 남은 충전 시간을 정확히 계산
+    - OverRoad 차량: 배터리 잔량으로 남은 충전 시간을 정확히 계산
     - 타사 차량: 공공 충전기 상태(충전 시작 시각)와 평균 충전 시간으로 남은 시간을 어림, 앞으로 올 차량은 시간당 도착 수로 어림
     extra = (vid, eta_s, soc) 이면 그 차량이 이 충전소로 간다고 가정해 함께 계산한다 (대안 충전소 비교용).
     """
@@ -708,7 +708,7 @@ def charger_state(charger, live, now, extra=None):
 
 
 def track_charging(now, live):
-    """HyperConnect 차량의 충전 기록을 만든다: 충전이 끝나면 실측 출력·시간이 그 충전소 정보가 된다."""
+    """OverRoad 차량의 충전 기록을 만든다: 충전이 끝나면 실측 출력·시간이 그 충전소 정보가 된다."""
     for vid, v in live.items():
         c = next((c for c in CHARGERS if distance_m(v["lat"], v["lon"], c["lat"], c["lon"]) <= CHARGER_RADIUS_M), None)
         if c is None:
@@ -831,7 +831,7 @@ DECEL_SHOW_MPS2 = 1.5    # 이보다 빠르게 줄면 감속 중 (브레이크�
 
 
 # ---------- 비연동 차량 (참여 차 센서가 본 물체, Tier 2) ----------
-OBS_MATCH_M = 4.0      # 이 거리 안에 참여 차량이 있으면 같은 차 (센서 물체 = 이미 아는 HyperConnect 차)
+OBS_MATCH_M = 4.0      # 이 거리 안에 참여 차량이 있으면 같은 차 (센서 물체 = 이미 아는 OverRoad 차)
 OBS_TTL_S = 2.0        # 이 시간 동안 아무 센서도 다시 보지 못하면 지운다
 observed = {}          # "S1" -> {"lat", "lon", "heading", "speed_kph", "ts", "seen_by": set, "decel_until"}
 observed_seq = [0]
@@ -1362,6 +1362,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"HyperConnect server on 0.0.0.0:{PORT}", flush=True)
+    print(f"OverRoad server on 0.0.0.0:{PORT}", flush=True)
     threading.Thread(target=road_loop, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

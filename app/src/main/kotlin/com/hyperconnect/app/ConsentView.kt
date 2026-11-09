@@ -28,12 +28,12 @@ class ConsentView(context: Context, onAgree: () -> Unit, onDecline: () -> Unit) 
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(72, 48, 72, 48)
-            addView(text(context, 40f, Color.WHITE).apply { text = "HyperConnect 데이터 공유 안내" })
+            addView(text(context, 40f, Color.WHITE).apply { text = "OverRoad 데이터 공유 안내" })
             addView(text(context, 28f, Color.rgb(210, 215, 225)).apply {
                 setPadding(0, 32, 0, 32)
                 setLineSpacing(0f, 1.2f)
                 text = """
-                    |주변 차량과 위험 정보를 주고받으려면 아래 정보를 HyperConnect 서버와 공유해야 해요.
+                    |주변 차량과 위험 정보를 주고받으려면 아래 정보를 OverRoad 서버와 공유해야 해요.
                     |
                     |· 보내는 정보: 차량 위치·진행 방향·속도·차로, 급제동·경고등·와이퍼·방향지시등 같은 차량 신호, 배터리 잔량과 목적지 충전소
                     |· 쓰는 곳: 뒤따르는 차량에 위험 경고 전달, 정체·충전 대기 안내, 이모트 전달, 내 기여 통계

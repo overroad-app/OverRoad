@@ -18,7 +18,7 @@ import android.util.Log
  * 내비를 가리지 않는 알림: 앱 화면을 앞으로 띄우지 않고, 플랫폼의 상단 알림(헤즈업)으로 경고를 보여 준다.
  *
  * Pleos 멀티 윈도우는 오른쪽 패널에 한 앱만 보여 주므로(다른 앱이 앞에 오면 내비가 숨겨진다)
- * 주행 중 HyperConnect는 뒤에서 동작하고, 경고만 화면 위쪽 알림으로 잠깐 띄운다.
+ * 주행 중 OverRoad는 뒤에서 동작하고, 경고만 화면 위쪽 알림으로 잠깐 띄운다.
  * 다른 앱 위에 그리기(SYSTEM_ALERT_WINDOW)는 signature·appop 권한이라 쓰지 않는다.
  * 소리는 앱이 오디오 포커스를 받아 직접 내므로(음성 경고 포함) 알림 채널은 무음이다.
  */
@@ -130,7 +130,7 @@ class AlertNotifier(private val context: Context) {
     }
 
     /**
-     * HyperConnect 표시: 흰 상단 알림은 OS(Pleos) 공통 모양 그대로 쓰고, 이 알림이 HyperConnect가 띄운 것임을
+     * OverRoad 표시: 흰 상단 알림은 OS(Pleos) 공통 모양 그대로 쓰고, 이 알림이 OverRoad가 띄운 것임을
      * 아이콘 오른쪽 아래 작은 초록 체크로만 알린다.
      */
     private fun drawMark(c: Canvas, size: Float) {

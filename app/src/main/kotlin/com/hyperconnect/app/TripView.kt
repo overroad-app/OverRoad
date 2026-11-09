@@ -106,7 +106,7 @@ class TripView(context: Context, private val mode: Mode) : View(context) {
         tick(x1, hm(tr.doneMs), "80% 완료", CHARGE_DARK, big = true, align = Paint.Align.RIGHT)
         t.textAlign = Paint.Align.LEFT; t.textSize = 18f; t.color = FAINT; t.typeface = Typeface.DEFAULT
         val basis = listOfNotNull(
-            if (tr.known > 0) "HyperConnect ${tr.known}대 정확" else null,
+            if (tr.known > 0) "OverRoad ${tr.known}대 정확" else null,
             if (tr.estimated > 0) "타사 ${tr.estimated}대 추정 (공공 충전기 상태·통계)" else null,
         ).joinToString(" + ").ifEmpty { "충전소에 다른 차 없음" }
         c.drawText("예측 근거: $basis", x0, ty + 62f, t)

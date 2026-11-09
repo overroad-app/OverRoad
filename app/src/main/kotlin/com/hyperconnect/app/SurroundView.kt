@@ -17,7 +17,7 @@ import kotlin.math.min
 data class SurroundCar(
     val key: Int, val along: Double, val cross: Double, val lane: Int?, val speedKph: Double,
     val turn: String?, val role: String?, val braking: Boolean, val decel: Boolean,
-    /** false = HyperConnect 비연동 차량 (참여 차의 카메라·레이더가 본 물체, ID 없음) */
+    /** false = OverRoad 비연동 차량 (참여 차의 카메라·레이더가 본 물체, ID 없음) */
     val member: Boolean = true,
     /** "ahead"/"behind" = 이모트를 누르면 실제로 받을 바로 앞차·뒤차 (서버 emote_target) */
     val emoteTarget: String? = null,
@@ -33,7 +33,7 @@ data class Surroundings(
 )
 
 /**
- * HyperConnect 기본 화면 (주변 차량 인식, rev3 미니멀 · 2026-11-09): 앱의 어느 크기에서나 배경에 깔린다.
+ * OverRoad 기본 화면 (주변 차량 인식, rev3 미니멀 · 2026-11-09): 앱의 어느 크기에서나 배경에 깔린다.
  * 내 차 뒤 위에서 앞을 내려다보는 구도로, 가까운 곳을 넓게(로그 눈금) 그리고 도로는 한 점으로 모인다.
  * 차 한 대는 캡슐 하나 — 차 모양은 흉내내지 않고 상태만 색과 선으로 보인다([drawCar]).
  *  - 감속 중인 차: 캡슐 아래쪽 가로 빨간 막대 (급제동 보고면 붉은 빛까지)

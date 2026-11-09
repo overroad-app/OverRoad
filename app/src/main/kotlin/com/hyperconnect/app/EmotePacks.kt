@@ -23,7 +23,7 @@ object EmotePacks {
     private fun s(t: Int, so: Int, h: Int) = mapOf("thanks" to t, "sorry" to so, "hello" to h)
 
     val all = listOf(
-        EmotePack("basic", "기본", "basic", "HyperConnect", 0, null, Color.rgb(34, 160, 100), Color.rgb(16, 110, 70),
+        EmotePack("basic", "기본", "basic", "OverRoad", 0, null, Color.rgb(34, 160, 100), Color.rgb(16, 110, 70),
             listOf("✨", "💚", "·"), s(R.raw.emote_thanks, R.raw.emote_sorry, R.raw.emote_hello)),
         EmotePack("retro", "레트로 8비트", "original", "현대차", 2200, null, Color.rgb(124, 58, 237), Color.rgb(219, 39, 119),
             listOf("✦", "▪", "★", "◆"), s(R.raw.emote_retro_thanks, R.raw.emote_retro_sorry, R.raw.emote_retro_hello)),
