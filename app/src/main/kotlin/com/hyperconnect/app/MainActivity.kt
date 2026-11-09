@@ -97,6 +97,11 @@ class MainActivity : Activity() {
     private lateinit var warningTitle: TextView
     private lateinit var warningLine: TextView
     private lateinit var emoteCard: FrameLayout   // 받은 이모트 (정차·저속일 때만, 팩별 색·애니메이션)
+    private lateinit var emoteCaptionBox: LinearLayout
+    private lateinit var appAlert: LinearLayout       // 앱이 앞에 있을 때의 흰 경고 카드 (상단 정중앙)
+    private lateinit var appAlertIcon: android.widget.ImageView
+    private lateinit var appAlertTitle: TextView
+    private lateinit var appAlertText: TextView
     private lateinit var emoteEmoji: TextView
     private lateinit var emoteCaption: TextView
     private lateinit var emotePackLabel: TextView
@@ -407,7 +412,7 @@ class MainActivity : Activity() {
         client = HyperConnectClient(
             baseUrl = serverUrl, vehicleId = vehicleId,
             position = { (fixedPosition?.let { (lat, lon) -> Triple(lat, lon, 0.0) } ?: position.current())?.let { (lat, lon, heading) -> Fix(lat, lon, heading, speedKph, lane, turnSignal, soc, charging, destination, role,
-                autoThanks = prefs.autoThanks, emotePack = prefs.emotePack)
+                autoThanks = prefs.autoThanks, emotePack = prefs.emotePack, emotesOff = !prefs.receiveEmotes)
             } },
             onConnectionChanged = { connected ->
                 update("서버", if (connected) "연결됨" else "끊김 (재연결 중)")
@@ -662,13 +667,61 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         inFront = false
+        // 앱 카드로 보이던 경고가 있으면, 내비로 넘어가도 놓치지 않게 남은 시간만큼 OS 상단 알림으로 옮긴다
+        appAlertArgs?.let { a ->
+            if (appAlertKey == a.key) {
+                val left = (a.untilMs - SystemClock.elapsedRealtime()).coerceAtLeast(1500L)
+                notifier.show(a.key, a.title, a.text, a.color, left, true, fg = a.fg, stripe = a.stripe, art = a.art)
+                ui.removeCallbacks(hideAppAlert); appAlert.visibility = View.GONE; appAlertKey = null
+            }
+        }
         super.onPause()
     }
 
     private fun popup(key: String, title: String, text: String, color: Int, ms: Long, onlyOnce: Boolean = false,
                       fg: Int = Color.WHITE, stripe: IntArray? = null, art: String? = null) {
-        // 경고·안내는 앱이 앞에 있든 없든 OS(Pleos) 상단 알림 한 가지로 띄운다 (OS와 같은 모양, 아이콘만 HyperConnect)
-        notifier.show(key, title, text, color, ms, onlyOnce, fg = fg, stripe = stripe, art = art)
+        // 경고·안내는 OS 상단 알림과 같은 흰 카드 한 가지 모양 (아이콘만 HyperConnect, 초록 체크).
+        //  - 내비가 앞에 있으면: OS(Pleos) 상단 알림 — 위치는 OS가 정해 바꿀 수 없다
+        //  - HyperConnect가 앞에 있으면: 앱이 같은 모양의 카드를 앱 화면 상단 정중앙에 직접 그린다 (2026-11-09)
+        //  감정표현 받지 않기와 상관없이 주의·경고는 늘 뜬다.
+        if (inFront) {
+            notifier.cancel(key)
+            showAppAlert(key, title, text, color, ms, onlyOnce, fg, stripe, art)
+        } else {
+            notifier.show(key, title, text, color, ms, onlyOnce, fg = fg, stripe = stripe, art = art)
+        }
+    }
+
+    private var appAlertKey: String? = null
+    private class AlertArgs(val key: String, val title: String, val text: String, val color: Int, val fg: Int,
+                            val stripe: IntArray?, val art: String?, val untilMs: Long)
+    private var appAlertArgs: AlertArgs? = null
+    private val hideAppAlert = Runnable {
+        appAlert.animate().alpha(0f).translationY(-40f).setDuration(180).withEndAction { appAlert.visibility = View.GONE; appAlertKey = null }.start()
+    }
+
+    /** 앱 안 흰 카드 (OS 상단 알림과 같은 모양): 같은 [key]의 갱신(긴급차량 거리)은 다시 튀어나오지 않고 글자만 바꾼다. */
+    private fun showAppAlert(key: String, title: String, text: String, color: Int, ms: Long, onlyOnce: Boolean,
+                             fg: Int, stripe: IntArray?, art: String?) = runOnUiThread {
+        val again = appAlertKey == key && appAlert.visibility == View.VISIBLE
+        appAlertIcon.setImageIcon(notifier.badgeIcon(title, color, fg, stripe, art))
+        appAlertTitle.text = title.substringAfter(" ")
+        appAlertText.text = text
+        appAlertKey = key
+        appAlertArgs = AlertArgs(key, title, text, color, fg, stripe, art, SystemClock.elapsedRealtime() + ms)
+        ui.removeCallbacks(hideAppAlert)
+        if (!(again && onlyOnce) || appAlert.visibility != View.VISIBLE) {
+            appAlert.animate().cancel()
+            appAlert.visibility = View.VISIBLE
+            appAlert.alpha = 0f; appAlert.translationY = -40f
+            appAlert.animate().alpha(1f).translationY(0f).setDuration(200).start()
+        }
+        ui.postDelayed(hideAppAlert, ms)
+    }
+
+    private fun cancelAlert(key: String) {
+        notifier.cancel(key)
+        if (appAlertKey == key) runOnUiThread { ui.removeCallbacks(hideAppAlert); hideAppAlert.run() }
     }
 
     /** 사고 정체 (2차 사고 방지 rev2): 멀리 있는 사고·정차 지점과 그 뒤 정체 꼬리를 짧은 카드로 알린다. */
@@ -793,7 +846,7 @@ class MainActivity : Activity() {
                 val s = roleStyle(e.role)
                 styleEmergency(s, "${e.symbol}  ${e.label}가 지나갔어요", "")
                 Log.i(TAG, "긴급차량: ${e.label}가 지나갔어요")
-                notifier.cancel("emergency")
+                cancelAlert("emergency")
                 ui.postDelayed(hideEmergency, 3000L)
             }
             return@runOnUiThread
@@ -960,6 +1013,7 @@ class MainActivity : Activity() {
         val who = if (e.fromAhead) "앞차" else "뒤차"
         val caption = if (e.pack == "emergency") "지나간 긴급차량이 길을 열어 줘서 고맙대요" else "$who${EMOTE_RECEIVED[e.name] ?: ""}"
         playSound(e.pack, e.name)
+        runOnUiThread { surround.pulse(e.fromAhead, outgoing = false, symbol = e.symbol) }  // 보낸 차에서 내 차로
         if (isSlow() && inFront) {
             Log.i(TAG, "이모트 수신: ${e.symbol} $caption · ${e.packName} 팩")
             animateEmote(e, caption)
@@ -972,9 +1026,28 @@ class MainActivity : Activity() {
     }
 
     /** 이모트 카드 (rev2): 팩 색 그라데이션 위에서 그림이 튀어 오르고, 팩 모양 조각이 흩날린다. 정차·저속일 때만. */
+    /**
+     * 받은 이모트 카드는 기본 화면 왼쪽 위 빈 곳에 정사각형으로 (2026-11-09): 화면 가운데의 내 차·점선·전파를 가리지 않게.
+     * 크기는 [EMOTE_BOX_PX]로 고정하고, 도로·아래 창에 닿을 만큼 좁을 때만 줄인다([SurroundView.emoteBox]). 글자도 그 크기에 맞춘다.
+     */
+    private fun placeEmoteCard(): Float {
+        val box = surround.emoteBox()
+        // 크기는 하나로 고정 (3차로일 때 크기, 2026-11-09 결정). 빈 곳이 그보다 좁을 때만 줄인다
+        val size = minOf(EMOTE_BOX_PX, box?.width()?.toInt() ?: EMOTE_BOX_PX)
+        emoteCard.layoutParams = FrameLayout.LayoutParams(size, size, Gravity.TOP or Gravity.START).apply {
+            leftMargin = box?.left?.toInt() ?: 28; topMargin = box?.top?.toInt() ?: 124
+        }
+        emoteEmoji.setTextSize(TypedValue.COMPLEX_UNIT_PX, size * 0.40f)
+        emoteCaption.setTextSize(TypedValue.COMPLEX_UNIT_PX, size * 0.075f)
+        emotePackLabel.setTextSize(TypedValue.COMPLEX_UNIT_PX, size * 0.05f)
+        emoteCaptionBox.setPadding((size * 0.06f).toInt(), (size * 0.04f).toInt(), (size * 0.06f).toInt(), (size * 0.05f).toInt())
+        return size.toFloat()
+    }
+
     private fun animateEmote(e: Emote, caption: String) {
         val pack = EmotePacks.of(e.pack)
-        emoteCard.background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(pack.colorTop, pack.colorBottom)).apply { cornerRadius = 48f }
+        val size = placeEmoteCard()
+        emoteCard.background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(pack.colorTop, pack.colorBottom)).apply { cornerRadius = size * 0.1f }
         emoteEmoji.text = e.symbol
         emoteCaption.text = caption
         emotePackLabel.text = if (e.pack == "basic") "" else "♦ ${pack.name} 팩"
@@ -987,14 +1060,14 @@ class MainActivity : Activity() {
         repeat(10) { i ->
             val p = TextView(this).apply {
                 text = pack.particles[i % pack.particles.size]
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f + (i % 3) * 10)
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, size * (0.07f + (i % 3) * 0.025f))
                 setTextColor(Color.WHITE)
                 alpha = 0.9f
             }
             emoteParticles.addView(p, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER))
             val angle = Math.toRadians(i * 36.0 + 10)
-            p.animate().translationX((Math.cos(angle) * 360).toFloat()).translationY((Math.sin(angle) * 220 - 60).toFloat())
+            p.animate().translationX((Math.cos(angle) * size * 0.42).toFloat()).translationY((Math.sin(angle) * size * 0.42 - size * 0.08).toFloat())
                 .alpha(0f).rotation(180f).setStartDelay(120L + i * 25).setDuration(1100)
                 .withEndAction { emoteParticles.removeView(p) }.start()
         }
@@ -1003,7 +1076,8 @@ class MainActivity : Activity() {
     }
 
     private fun showEmoteBanner(text: String) {
-        emoteCard.background = rounded(Color.rgb(30, 140, 80), 48f)
+        val size = placeEmoteCard()
+        emoteCard.background = rounded(Color.rgb(30, 140, 80), size * 0.1f)
         emoteEmoji.text = ""
         emoteCaption.text = text
         emotePackLabel.text = ""
@@ -1062,6 +1136,9 @@ class MainActivity : Activity() {
     private fun updateDriverUi(now: Long) {
         val slow = isSlow()
         emoteBar.visibility = if (prefs.emoteButtons && slow) View.VISIBLE else View.GONE
+        // '항상 감정표현 받지 않기'를 켜면 보낼 수도 없다 → 버튼도 쿨타임처럼 흐리게 (눌러도 이유만 알려 준다)
+        val sendAlpha = if (prefs.receiveEmotes) 1f else 0.4f
+        emoteButtons.forEach { if (it.alpha != sendAlpha) it.alpha = sendAlpha }
         sheet.compact = emoteBar.visibility != View.VISIBLE
         tripPill.translationY = if (sheet.compact) (AssistantSheet.MINI_H - AssistantSheet.COMPACT_H).toFloat() else 0f
         if (!slow) mergeThanksButton.visibility = View.GONE
@@ -1114,20 +1191,30 @@ class MainActivity : Activity() {
      */
     private fun applyLevel(level: Int) {
         val full = level == AssistantSheet.LEVEL_FULL
-        surround.visibility = if (full) View.VISIBLE else View.GONE
-        surround.running = full
+        // 연결망 시각화는 어느 크기에서나 앱의 배경이다 (창이 투명하면 뒤에 빈 Pleos 홈 화면이 보였음, 2026-11-09)
+        surround.visibility = View.VISIBLE
+        surround.running = true
         sheet.glass = full
         infoRows.visibility = if (full) View.GONE else View.VISIBLE
         val card = { v: View -> v.background = if (full) rounded(Color.argb(235, 255, 255, 255), 36f) else null; v.elevation = if (full) 12f else 0f }
         card(topBar); card(emoteBar)
         storeButton.visibility = if (full) View.VISIBLE else View.GONE
         if (!full) store.view.visibility = View.GONE
-        if (full) {
-            // 제목 줄·이모트 바 높이만큼 위아래를 비워 그림이 가리지 않게
+        updateSurroundInsets()
+        client?.fetchSurroundings { s -> if (s != null) runOnUiThread { surround.update(s) } }
+    }
+
+    /** 그림이 창(시트)에 가리지 않게: 전체 화면이면 제목 줄·이모트 바 사이, 그 밖에는 시트 위쪽 빈 곳에. */
+    private fun updateSurroundInsets() {
+        val root = surround.height.takeIf { it > 0 } ?: return
+        if (sheet.level == AssistantSheet.LEVEL_FULL) {
             surround.insetTop = (AssistantSheet.MARGIN + topBar.bottom + 30).toFloat()
             surround.insetBottom = (AssistantSheet.MARGIN + emoteBar.height + 40).toFloat()
-            client?.fetchSurroundings { s -> if (s != null) runOnUiThread { surround.update(s) } }
+        } else {
+            surround.insetTop = 0f
+            surround.insetBottom = (root - sheet.top + 24).coerceAtLeast(0).toFloat()
         }
+        surround.invalidate()
     }
 
     private fun renderInfoRows() {
@@ -1230,7 +1317,14 @@ class MainActivity : Activity() {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
         setPadding(18, 22, 18, 22)
         setOnClickListener {
-            client?.sendEmote(name, toAhead) { result -> update("마지막 이모트", "$label · $result") }
+            client?.sendEmote(name, toAhead) { result ->
+                update("마지막 이모트", "$label · $result")
+                // 기본 화면: 실제로 전달됐을 때만 점선을 따라 받는 차로 날아간다
+                runOnUiThread {
+                    if (result.endsWith("보냈어요")) surround.pulse(toAhead, outgoing = true, symbol = emoji)
+                    else Toast.makeText(this@MainActivity, result, Toast.LENGTH_SHORT).show()  // 5초 2번 · 같은 차 3분 · 받지 않기
+                }
+            }
             animate().scaleX(0.92f).scaleY(0.92f).setDuration(80).withEndAction { animate().scaleX(1f).scaleY(1f).setDuration(120).start() }.start()
         }
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(10, 0, 10, 0) }
@@ -1319,20 +1413,40 @@ class MainActivity : Activity() {
         emotePackLabel = TextView(this).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f); setTextColor(Color.argb(220, 255, 255, 255)); gravity = Gravity.CENTER
         }
+        appAlertIcon = android.widget.ImageView(this)
+        appAlertTitle = TextView(this).apply { setTextSize(TypedValue.COMPLEX_UNIT_PX, 34f); setTextColor(Color.rgb(17, 24, 39)); typeface = Typeface.DEFAULT_BOLD }
+        appAlertText = TextView(this).apply { setTextSize(TypedValue.COMPLEX_UNIT_PX, 26f); setTextColor(Color.rgb(75, 85, 99)); maxLines = 2 }
+        appAlert = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            minimumWidth = 680
+            elevation = POP_ELEVATION + 20f
+            background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = 22f }
+            setPadding(30, 24, 48, 24)
+            addView(appAlertIcon, LinearLayout.LayoutParams(96, 96).apply { marginEnd = 26 })
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(appAlertTitle)
+                addView(appAlertText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 6 })
+            })
+            setOnClickListener { ui.removeCallbacks(hideAppAlert); hideAppAlert.run() }
+        }
         emoteParticles = FrameLayout(this)
         emoteCard = FrameLayout(this).apply {
             visibility = View.GONE
-            minimumHeight = 380  // 조각이 흩날릴 공간
+            clipChildren = true; clipToOutline = true
             elevation = POP_ELEVATION + 4f
             addView(emoteParticles, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            addView(LinearLayout(this@MainActivity).apply {
+            emoteCaptionBox = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
                 setPadding(48, 24, 48, 40)
                 addView(emoteEmoji)
                 addView(emoteCaption)
                 addView(emotePackLabel)
-            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+            }
+            addView(emoteCaptionBox, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER))
         }
         fun bigButton(label: String, onClick: () -> Unit) = Button(this).apply {
             text = label
@@ -1381,7 +1495,10 @@ class MainActivity : Activity() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 32f)
             visibility = View.GONE
             setOnClickListener {
-                client?.sendEmote("thanks", toAhead = false) { r -> update("마지막 이모트", "👍 양보 감사 · $r") }
+                client?.sendEmote("thanks", toAhead = false) { r ->
+                update("마지막 이모트", "👍 양보 감사 · $r")
+                if (r.endsWith("보냈어요")) runOnUiThread { surround.pulse(false, outgoing = true, symbol = "👍") }
+            }
                 visibility = View.GONE
             }
         }
@@ -1454,7 +1571,10 @@ class MainActivity : Activity() {
             elevation = 14f
             setOnClickListener { sheet.snapTo(AssistantSheet.LEVEL_MID) }
         }
-        surround = SurroundView(this).apply { visibility = View.GONE }
+        surround = SurroundView(this).apply {
+            running = true
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateSurroundInsets() }
+        }
         val detail = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(topBar)
@@ -1467,6 +1587,8 @@ class MainActivity : Activity() {
             updateTripPill()
             if (level != AssistantSheet.LEVEL_MINI) { renderInfoRows(); render(); refreshDetails() }
         }
+        // 시트가 커지고 줄어드는 동안 그림이 시트 위쪽 빈 곳을 따라가게
+        sheet.addOnLayoutChangeListener { _, _, top, _, _, _, oldTop, _, _ -> if (top != oldTop) updateSurroundInsets() }
         renderInfoRows()
         settings = SettingsPanel(this, prefs, onClose = { settings.view.visibility = View.GONE }, onWithdraw = ::withdrawConsent)
         consent = ConsentView(this, onAgree = {
@@ -1497,7 +1619,9 @@ class MainActivity : Activity() {
             addView(tripPill, FrameLayout.LayoutParams(TRIP_PILL_W, TRIP_PILL_H, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
                 bottomMargin = AssistantSheet.MARGIN + AssistantSheet.MINI_H + 14
             }.also { tripPill.translationX = -(AssistantSheet.MINI_W - TRIP_PILL_W) / 2f })
-            addView(emoteCard, FrameLayout.LayoutParams(900, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = AssistantSheet.MINI_H + 56 })
+            addView(emoteCard, FrameLayout.LayoutParams(360, 360, Gravity.TOP or Gravity.START).apply { leftMargin = 28; topMargin = 124 })
+            addView(appAlert, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = 18 })
             addView(cards, FrameLayout.LayoutParams(AssistantSheet.MINI_W + 48, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = 20 })
             addView(settings.view, inset())
             addView(store.view, inset())
@@ -1543,6 +1667,7 @@ class MainActivity : Activity() {
         private const val TRIP_PILL_H = 128
         private const val INFO_ALERT_MS = 5000L
         private const val EMOTE_SHOW_MS = 3000L
+        private const val EMOTE_BOX_PX = 344  // 받은 이모트 정사각형 카드 한 변
         private const val NOTICE_SHOW_MS = 5000L
         private const val SLOW_KPH = 5f               // 플랫폼 주행 규제가 켜지는 기준(5km/h 초과)에 맞춘다
         private const val TTS_PREROLL_MS = 180L        // 음성 안내 선행 묵음 (가이드 권장 150~200ms)

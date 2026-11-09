@@ -69,6 +69,8 @@ data class Fix(
     val lat: Double, val lon: Double, val heading: Double, val speedKph: Float, val lane: Int?, val turn: String?,
     val soc: Int? = null, val charging: Boolean = false, val dest: Destination? = null, val role: String? = null,
     val autoThanks: Boolean = false, val emotePack: String = "basic",
+    /** 항상 감정표현 받지 않기 */
+    val emotesOff: Boolean = false,
 )
 
 /**
@@ -189,11 +191,19 @@ class HyperConnectClient(
                                     if (v.isNull("lane")) null else v.getInt("lane"), v.optDouble("speed_kph", 0.0),
                                     v.optString("turn").takeIf { it == "LEFT" || it == "RIGHT" },
                                     v.optString("role").takeIf { it.isNotEmpty() && it != "null" }, v.optBoolean("braking"),
-                                    v.optBoolean("decel"))
+                                    v.optBoolean("decel"), v.optBoolean("member", true),
+                                    v.optString("emote_target").takeIf { it == "ahead" || it == "behind" },
+                                    when {
+                                        v.isNull("emote_block") -> null
+                                        v.optString("emote_block") == "off" -> -1
+                                        v.optString("emote_block") == "self" -> -2
+                                        else -> v.optInt("emote_block")
+                                    })
                             }
                         },
                         connected = o.optInt("connected"), aheadM = o.optDouble("ahead_m", 200.0),
                         behindM = o.optDouble("behind_m", 86.0), errorM = o.optDouble("error_m", 5.0),
+                        observed = o.optInt("observed"),
                     )
                 }
             } catch (e: Exception) {
@@ -318,7 +328,7 @@ class HyperConnectClient(
         .put("speed_kph", speedKph.toDouble()).put("lane", lane ?: JSONObject.NULL)
         .put("turn", turn ?: JSONObject.NULL)
         .put("soc", soc ?: JSONObject.NULL).put("charging", charging)
-        .put("role", role ?: JSONObject.NULL).put("auto_thanks", autoThanks).put("emote_pack", emotePack)
+        .put("role", role ?: JSONObject.NULL).put("auto_thanks", autoThanks).put("emote_pack", emotePack).put("emotes_off", emotesOff)
         .put("dest", dest?.let {
             JSONObject().put("lat", it.lat).put("lon", it.lon).put("name", it.name).put("eta_s", it.etaS)
         } ?: JSONObject.NULL)

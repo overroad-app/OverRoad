@@ -15,6 +15,9 @@
       모든 가상 차량은 앞차(에뮬레이터 B·C 포함)와 간격을 지키며 따라가고 앞차를 뚫고 지나가지 않는다.
       긴급차량이 같은 차로 뒤에서 다가오면 옆 차로가 비어 있을 때 비켜 주고, 길이 막히면 긴급차량이 따라가며 기다린다.
         auto=1                       자동 감사 인사 켬
+        member=0                     HyperConnect 비연동 차 (타사·미동의): 위치를 보내지 않는다 — 센서 장착 참여 차가 보면 화면에 나타난다
+        emotes_off=1                 항상 감정표현 받지 않기
+        sensor=1                     카메라·레이더 장착 참여 차 (Tier 2 미리보기): 앞 80m·뒤 40m·옆 9m 안 물체를 0.5초마다 서버에 보고
       --jam 시작 거리:대수:속도[:merge] → J1..Jn을 1~3차로에 30m 간격으로 배치
                                          (merge면 3차로가 끝나 3차로 차량이 왼쪽 깜빡이)
   python3 scripts/fleet.py weather A --rain 2 --fog
@@ -93,7 +96,9 @@ def run(args):
                       "lane_at": (opts["lane"].split("@") if "lane" in opts else None),
                       "speed_at": sorted(([float(x) for x in kv[6:].split("@")[::-1]] for part in rest_all for kv in part.split(",")
                                           if kv.startswith("speed=")), key=lambda a: a[0]),  # [(시각, 속도), ...]
-                      "auto": opts.get("auto") == "1"})
+                      "auto": opts.get("auto") == "1",
+                      "member": opts.get("member") != "0", "sensor": opts.get("sensor") == "1",
+                      "emotes_off": opts.get("emotes_off") == "1"})
     if args.jam:
         start, count, speed, *kind = args.jam.split(":")
         for i in range(int(count)):
@@ -101,10 +106,13 @@ def run(args):
             turn = "LEFT" if kind == ["merge"] and lane == 3 else None
             fleet.append({"id": f"J{i + 1}", "lane": lane, "fwd": float(start) + i * 30, "speed": float(speed), "turn": turn,
                           "role": None, "soc": None, "dest": None, "eta": None, "at": None, "charging": False,
-                          "turn_at": None, "lane_at": None, "speed_at": [], "auto": False})
+                          "turn_at": None, "lane_at": None, "speed_at": [], "auto": False, "member": True, "sensor": False,
+                          "emotes_off": False})
     for v in fleet:
-        threading.Thread(target=listen, args=(v["id"],), daemon=True).start()
+        if v["member"]:
+            threading.Thread(target=listen, args=(v["id"],), daemon=True).start()
         extra = " ".join(x for x in (
+            not v["member"] and "비연동(위치 안 보냄)", v["sensor"] and "센서 장착",
             v["turn"] and f"깜빡이 {v['turn']}", v["role"] and f"[{v['role']}]",
             v["soc"] is not None and f"SoC {v['soc']}%", v["dest"] and f"→ {v['dest']['name']}",
             v["at"] and f"@ {v['at']['name']}{' 충전 중' if v['charging'] else ''}") if x)
@@ -134,6 +142,7 @@ def run(args):
         return all(abs(o["pos"] - pos) > 12 for o in others if o is not skip and o["lane_now"] == lane)
 
     start = last = time.time()
+    last_sense = 0.0
     while True:
         now = time.time()
         t, dt = now - start, min(0.5, now - last)
@@ -220,10 +229,33 @@ def run(args):
                 eta = v["eta"] if v["eta"] is not None else (
                     math.dist((lat * 111320, lon * 88000), (d["lat"] * 111320, d["lon"] * 88000)) / max(v["speed"], 30) * 3.6)
                 dest = {"lat": d["lat"], "lon": d["lon"], "name": d["name"], "eta_s": max(0, round(eta - t))}
+            if not v["member"]:
+                continue  # 비연동 차는 서버에 아무것도 보내지 않는다
             call("/position", {"vehicle": v["id"], "lat": lat, "lon": lon, "heading": h0,
                                "speed_kph": 0 if v["at"] else round(v["cur"], 1), "lane": v["lane"], "turn": v["turn"],
                                "role": v["role"], "soc": v["soc"], "charging": v["charging"], "dest": dest,
-                               "auto_thanks": v["auto"]})
+                               "auto_thanks": v["auto"], "emotes_off": v["emotes_off"]})
+        # 센서 장착 참여 차: 보이는 물체(연동·비연동 구별 없이, 서버가 가린다)를 상대 위치로 보고
+        if now - last_sense >= 0.5:
+            last_sense = now
+            for v in fleet:
+                if not (v["sensor"] and v["member"]) or v["at"]:
+                    continue
+                objs = []
+                for o in others:
+                    if o["v"] is v:
+                        continue
+                    if o["v"] is not None:
+                        along, cross = o["pos"] - v["pos"], o["v"]["side"] - v["side"]
+                    else:  # 에뮬레이터 차량(연동)도 센서에는 보인다 → 서버가 참여 차량과 겹친다고 보고 버린다
+                        along, cross = o["pos"] - v["pos"], (o["lane_now"] - base_lane) * LANE_WIDTH_M - v["side"]
+                    if -40 <= along <= 80 and abs(cross) <= 9:
+                        objs.append({"along": round(along + (hash((o["id"], int(now * 2))) % 7 - 3) * 0.1, 1),
+                                     "cross": round(cross, 1), "speed_kph": round(o["cur"], 1)})
+                try:
+                    call("/detections", {"vehicle": v["id"], "objects": objs})
+                except Exception:
+                    pass
         time.sleep(0.25)
 
 

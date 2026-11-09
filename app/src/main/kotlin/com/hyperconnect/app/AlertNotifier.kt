@@ -35,6 +35,10 @@ class AlertNotifier(private val context: Context) {
         )
     }
 
+    /** 상단 알림의 큰 아이콘(배지)과 같은 그림 — 앱이 앞에 있을 때 앱 안 흰 카드에도 같은 아이콘을 쓴다. */
+    fun badgeIcon(title: String, color: Int, fg: Int = Color.WHITE, stripe: IntArray? = null, art: String? = null): Icon =
+        if (art == ART_BRAKE) brakeBadge(color) else badge(color, fg, stripe, title.substringBefore(" "))
+
     /** [key]가 같으면 같은 알림을 갱신한다 (예: 긴급차량 접근 거리). [timeoutMs]가 지나면 저절로 사라진다. */
     fun show(key: String, title: String, text: String, color: Int, timeoutMs: Long, onlyOnce: Boolean = false,
              icon: Int = android.R.drawable.ic_dialog_alert, fg: Int = Color.WHITE, stripe: IntArray? = null, art: String? = null) {

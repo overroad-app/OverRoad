@@ -13,6 +13,7 @@
   POST /rating                            충전 후 충전소 별점 (1~5)
   POST /public_status                     공공 충전기 상태 입력 (환경공단 API 대체, 시연용)
   POST /demo                              시연 설정 (charge_time_scale: 충전 시간 배속)
+  POST /detections                        참여 차량 센서(카메라·레이더, Tier 2)가 본 주변 물체 → 비연동 차량으로 등록
   GET  /stats?vehicle=B                   내 기여 통계·배지·최근 보고 기록
   GET  /chargers?vehicle=B                충전소 지도: 모든 충전소의 별점·혼잡·이 차량의 예상 완료 시각
   GET  /nearby?vehicle=B                 앱 세부 정보 화면: 주변 기상·사고·긴급차량·연결 차량 수
@@ -122,7 +123,9 @@ events = []        # 확정된 이벤트 (대시보드용)
 alerts = []        # 보낸 경고 (대시보드용)
 sent = {}          # (vehicle_id, type, zone_key) -> 마지막 전송 시각
 emotes = []        # 보낸 이모트 (대시보드용)
-last_emote = {}    # vehicle_id -> 마지막 이모트 전송 시각
+emote_times = {}   # vehicle_id -> 최근 이모트 전송 시각들 (연타 제한)
+pair_sent = {}     # (보낸 차, 받는 차) -> 마지막으로 보낸 시각 (같은 차 제한)
+pair_event = {}    # frozenset({차, 차}) -> 둘 사이에 마지막으로 새 일이 생긴 시각 (양보·차로 변경 알림 → 같은 차 제한 해제)
 
 # 이모트: 정해진 긍정·중립 표현만 허용한다 (자유 입력은 시비·보복운전에 악용될 수 있다)
 EMOTES = {"thanks": "👍", "sorry": "🙏", "hello": "👋"}
@@ -145,7 +148,8 @@ STORE = [
 EMOTE_PACKS = {p["id"]: p["name"] for p in STORE}
 purchases = defaultdict(set)   # 차량 -> 산 팩 (결제 SDK 연동 후 채워진다)
 EMOTE_RANGE_M = 150       # 이 거리 안의 바로 앞차·뒤차에게만 보낸다
-EMOTE_COOLDOWN_S = 5      # 한 차량이 이모트를 보낼 수 있는 최소 간격
+EMOTE_BURST_N, EMOTE_BURST_S = 2, 5   # 연타 제한: 5초 안에 최대 2번 (받는 차와 상관없이)
+EMOTE_PAIR_S = 180        # 같은 차에게는 3분에 한 번 — 그 사이 둘 사이에 새 일(양보·차로 변경 알림)이 생기면 다시 열린다
 OTHER_LANE_PENALTY_M = 30 # 같은 거리면 같은 차로 차량을 우선한다
 
 # 기여 통계 (2026-11-08): 신뢰 점수는 쓰지 않는다. 안전 경고는 보수적으로 일단 보내고,
@@ -181,6 +185,15 @@ def relative(observer, lat, lon):
     along = dx * math.sin(h) + dy * math.cos(h)
     cross = dx * math.cos(h) - dy * math.sin(h)
     return along, cross
+
+
+def absolute(observer, along, cross):
+    """관찰 차량 기준 (전방 m, 오른쪽 m) 지점의 위도·경도 — relative()의 역."""
+    h = math.radians(observer["heading"])
+    north = along * math.cos(h) - cross * math.sin(h)
+    east = along * math.sin(h) + cross * math.cos(h)
+    return (observer["lat"] + north / 111320,
+            observer["lon"] + east / (111320 * math.cos(math.radians(observer["lat"]))))
 
 
 def same_direction(a, b):
@@ -403,6 +416,25 @@ def weather_feed(fmt=None):
 
 # ---------- HTTP ----------
 
+def emote_target(vid, me, live, want_ahead):
+    """이모트를 받을 바로 앞차·뒤차: 같은 방향, 150m 안, 같은 차로(모르면 같은 차로로 본다)를 먼저, 바로 옆 차로까지만.
+    기본 화면의 점선(`surroundings`)도 이 함수를 써서, 화면에 이어진 차가 곧 실제로 받는 차다. 호출 시 lock을 잡고 있어야 한다."""
+    best, best_score = None, None
+    for oid, v in live.items():
+        if oid == vid or not same_direction(me["heading"], v["heading"]):
+            continue
+        along, _ = relative(me, v["lat"], v["lon"])
+        if (along > 0) != want_ahead or abs(along) > EMOTE_RANGE_M:
+            continue
+        rel = lane_relation(me.get("lane"), v.get("lane"))
+        if rel == "other":
+            continue  # 두 차로 이상 떨어진 차는 '앞차·뒤차'가 아니다 (2026-11-09)
+        score = abs(along) + (0 if rel in ("same", "unknown") else OTHER_LANE_PENALTY_M)
+        if best_score is None or score < best_score:
+            best, best_score = oid, score
+    return best
+
+
 def handle_emote(body):
     """보낸 차량 기준 바로 앞차 또는 뒤차를 찾아 이모트를 전달한다. 받는 쪽에는 상대 ID를 알리지 않는다."""
     now = time.time()
@@ -412,25 +444,28 @@ def handle_emote(body):
             return {"delivered": False, "reason": "위치 정보 없음"}
         if body["emote"] not in EMOTES or body["target"] not in ("ahead", "behind"):
             return {"delivered": False, "reason": "허용되지 않은 이모트"}
-        if now - last_emote.get(body["vehicle"], 0) < EMOTE_COOLDOWN_S:
-            return {"delivered": False, "reason": "잠시 후 다시 보내주세요"}
+        if me.get("emotes_off"):
+            # 받지 않는 차는 보낼 수도 없다 (한쪽으로만 보내는 일 방지)
+            return {"delivered": False, "reason": "'항상 감정표현 받지 않기'를 켜 두면 보낼 수도 없어요", "limit": "self_off"}
+        sent = [t for t in emote_times.get(body["vehicle"], []) if now - t < EMOTE_BURST_S]
+        emote_times[body["vehicle"]] = sent
+        if len(sent) >= EMOTE_BURST_N:
+            return {"delivered": False, "reason": f"{EMOTE_BURST_S}초에 {EMOTE_BURST_N}번까지 보낼 수 있어요", "limit": "burst"}
 
         want_ahead = body["target"] == "ahead"
-        best, best_score = None, None
-        for vid, v in live_vehicles(now).items():
-            if vid == body["vehicle"] or not same_direction(me["heading"], v["heading"]):
-                continue
-            along, _ = relative(me, v["lat"], v["lon"])
-            if (along > 0) != want_ahead or abs(along) > EMOTE_RANGE_M:
-                continue
-            score = abs(along) + (0 if lane_relation(me.get("lane"), v.get("lane")) in ("same", "unknown")
-                                  else OTHER_LANE_PENALTY_M)
-            if best_score is None or score < best_score:
-                best, best_score = vid, score
+        best = emote_target(body["vehicle"], me, live_vehicles(now), want_ahead)
         if best is None:
             return {"delivered": False, "reason": f"{EMOTE_RANGE_M}m 안에 {'앞' if want_ahead else '뒤'}차가 없음"}
 
-        last_emote[body["vehicle"]] = now
+        side = "앞" if want_ahead else "뒤"
+        if vehicles[best].get("emotes_off"):
+            return {"delivered": False, "reason": f"{side}차는 이모트를 받지 않아요", "limit": "off"}
+        wait = pair_block_s(body["vehicle"], best, now)
+        if wait:
+            return {"delivered": False, "reason": f"같은 {side}차에는 {EMOTE_PAIR_S // 60}분에 한 번 · {wait // 60}분 {wait % 60}초 뒤에",
+                    "limit": "pair", "wait_s": wait}
+        sent.append(now)
+        pair_sent[(body["vehicle"], best)] = now
         # 받는 차 입장에서 보낸 차의 위치: 내가 뒤차에게 보냈다면 받는 쪽에서 나는 앞차다
         deliver_emote(body["vehicle"], best, body["emote"], "ahead" if not want_ahead else "behind", now)
         return {"delivered": True, "target": body["target"]}
@@ -447,8 +482,27 @@ def owned_packs(vid):
     return owned
 
 
+def pair_block_s(sender, receiver, now):
+    """같은 차 제한: 이 차에게 다시 보낼 수 있을 때까지 남은 초 (0이면 보낼 수 있음). 호출 시 lock을 잡고 있어야 한다."""
+    last = pair_sent.get((sender, receiver))
+    if last is None or now - last >= EMOTE_PAIR_S:
+        return 0
+    if pair_event.get(frozenset((sender, receiver)), 0) > last:
+        return 0  # 보낸 뒤 둘 사이에 새 일이 생겼다
+    return int(EMOTE_PAIR_S - (now - last)) + 1
+
+
+def mark_pair_event(a, b, now):
+    """두 차 사이에 새 일(양보 요청·진입 성공)이 생겼다 → 같은 차 제한을 푼다."""
+    pair_event[frozenset((a, b))] = now
+
+
 def deliver_emote(sender, receiver, emote, from_side, now, auto=False, pack=None):
-    """이모트 하나를 전달하고 기록한다. 보낸 차의 팩으로 들린다(갖고 있지 않은 팩이면 기본). 호출 시 lock을 잡고 있어야 한다."""
+    """이모트 하나를 전달하고 기록한다. 보낸 차의 팩으로 들린다(갖고 있지 않은 팩이면 기본). 호출 시 lock을 잡고 있어야 한다.
+    받는 차가 '항상 감정표현 받지 않기'를 켰으면 자동 감사 인사·긴급차량 감사도 보내지 않는다."""
+    if (vehicles.get(receiver) or {}).get("emotes_off"):
+        print(f"[emote] {sender} -> {receiver}: 받지 않기 설정이라 보내지 않음", flush=True)
+        return False
     pack = pack or (vehicles.get(sender) or {}).get("emote_pack") or "basic"
     if pack not in owned_packs(sender):
         pack = "basic"
@@ -458,6 +512,7 @@ def deliver_emote(sender, receiver, emote, from_side, now, auto=False, pack=None
     emotes.append({"from": sender, "to": receiver, "emote": emote, "auto": auto, "ts": now})
     del emotes[:-20]
     print(f"[emote] {sender} -> {receiver}: {EMOTES[emote]} {emote}{' (자동)' if auto else ''}", flush=True)
+    return True
 
 
 def forget(vid):
@@ -468,6 +523,11 @@ def forget(vid):
                                             ("차로 변경", lane_intents)) if table.pop(vid, None) is not None]
         for key in [k for k in weather_onsets if k[0] == vid]:
             del weather_onsets[key]
+        emote_times.pop(vid, None)
+        for key in [k for k in pair_sent if vid in k]:
+            del pair_sent[key]
+        for key in [k for k in pair_event if vid in k]:
+            del pair_event[key]
     print(f"[forget] {vid} 데이터 삭제: {', '.join(removed) or '없음'}", flush=True)
     return {"ok": True, "removed": removed}
 
@@ -770,6 +830,57 @@ BRAKE_GLOW_S = 4         # 급제동 보고 뒤 이 시간 동안 브레이크�
 DECEL_SHOW_MPS2 = 1.5    # 이보다 빠르게 줄면 감속 중 (브레이크등)
 
 
+# ---------- 비연동 차량 (참여 차 센서가 본 물체, Tier 2) ----------
+OBS_MATCH_M = 4.0      # 이 거리 안에 참여 차량이 있으면 같은 차 (센서 물체 = 이미 아는 HyperConnect 차)
+OBS_TTL_S = 2.0        # 이 시간 동안 아무 센서도 다시 보지 못하면 지운다
+observed = {}          # "S1" -> {"lat", "lon", "heading", "speed_kph", "ts", "seen_by": set, "decel_until"}
+observed_seq = [0]
+
+
+def handle_detections(body):
+    """참여 차량이 카메라·레이더로 본 물체 목록을 받는다 (Tier 2 미리보기: 지금 Pleos SDK에는 센서 물체 API가 없다).
+    물체마다 (1) 참여 차량과 겹치면 버리고(이미 위치를 직접 보내는 차) (2) 이미 등록한 비연동 차량과 겹치면 갱신,
+    (3) 아니면 새 비연동 차량으로 등록한다. 비연동 차량은 ID가 없으므로 서버가 붙인 임시 번호로만 이어 그린다."""
+    now = time.time()
+    with lock:
+        live = live_vehicles(now)
+        me = live.get(body["vehicle"])
+        if not me:
+            return {"ok": False}
+        matched, new, updated = 0, 0, 0
+        for o in body.get("objects", []):
+            lat, lon = absolute(me, o["along"], o["cross"])
+            if any(distance_m(lat, lon, v["lat"], v["lon"]) <= OBS_MATCH_M for vid, v in live.items() if vid != body["vehicle"]):
+                matched += 1
+                continue
+            best, best_d = None, OBS_MATCH_M
+            for oid, ob in observed.items():
+                # 마지막으로 본 뒤 달린 거리만큼 앞으로 옮겨서 비교
+                ahead = (ob.get("speed_kph") or 0) / 3.6 * (now - ob["ts"])
+                plat, plon = absolute(ob, ahead, 0)
+                d = distance_m(lat, lon, plat, plon)
+                if d < best_d:
+                    best, best_d = oid, d
+            speed = o.get("speed_kph")
+            if best is None:
+                observed_seq[0] += 1
+                best = f"S{observed_seq[0]}"
+                observed[best] = {"seen_by": set(), "decel_until": 0, "first": now}
+                new += 1
+            else:
+                updated += 1
+            ob = observed[best]
+            prev_kph, prev_ts = ob.get("speed_kph"), ob.get("ts")
+            if prev_kph is not None and speed is not None and prev_ts and 0 < now - prev_ts < 3 \
+                    and (prev_kph - speed) / 3.6 / (now - prev_ts) >= DECEL_SHOW_MPS2:
+                ob["decel_until"] = now + 1.5
+            ob.update({"lat": lat, "lon": lon, "heading": me["heading"], "speed_kph": speed, "ts": now})
+            ob["seen_by"].add(body["vehicle"])
+        for oid in [k for k, ob in observed.items() if now - ob["ts"] > OBS_TTL_S]:
+            del observed[oid]
+    return {"ok": True, "matched_members": matched, "new": new, "updated": updated}
+
+
 def surroundings(vid):
     """주변 차량 시각화 (Tier 1 = GPS 비콘): 같은 방향으로 가는 차량의 상대 위치(앞뒤·좌우 m)와 상태.
     다른 차량 ID는 내보내지 않고, 화면에서 움직임을 이어 그리기 위한 익명 번호만 준다."""
@@ -780,6 +891,9 @@ def surroundings(vid):
         if not me:
             return {"me": None, "vehicles": [], "connected": 0}
         braking = {r["vehicle"] for r in reports if r["type"] == "hard_brake" and now - r["ts"] <= BRAKE_GLOW_S}
+        # 이모트를 누르면 실제로 받을 차 (화면에서 점선으로 잇는다)
+        targets = {emote_target(vid, me, live, True): "ahead", emote_target(vid, me, live, False): "behind"}
+        targets.pop(None, None)
         out = []
         for oid, v in live.items():
             if oid == vid or not same_direction(me["heading"], v["heading"]):
@@ -790,12 +904,34 @@ def surroundings(vid):
             out.append({"key": abs(hash((vid, oid))) % 100000, "along": round(along, 1), "cross": round(cross, 1),
                         "lane": v.get("lane"), "speed_kph": v.get("speed_kph") or 0, "turn": v.get("turn"),
                         "role": v.get("role"), "braking": oid in braking, "decel": now < v.get("decel_until", 0),
-                        "age_s": round(now - v["ts"], 1)})
+                        "age_s": round(now - v["ts"], 1), "member": True, "emote_target": targets.get(oid),
+                        # 대상 차에 지금 보낼 수 없으면: "self"(내가 받지 않기) · "off"(상대가 받지 않기) · 남은 초 (같은 차 3분 제한)
+                        "emote_block": ("self" if me.get("emotes_off") else "off" if v.get("emotes_off")
+                                        else pair_block_s(vid, oid, now) or None)
+                        if oid in targets else None})
+        # 비연동 차량: 참여 차 센서가 본 물체 (연동 차량과 겹치면 이미 위에서 그렸다)
+        n_obs = 0
+        for oid, ob in observed.items():
+            if now - ob["ts"] > OBS_TTL_S or not same_direction(me["heading"], ob["heading"]):
+                continue
+            if distance_m(me["lat"], me["lon"], ob["lat"], ob["lon"]) <= OBS_MATCH_M:
+                continue  # 내 차를 본 것
+            if any(distance_m(ob["lat"], ob["lon"], v["lat"], v["lon"]) <= OBS_MATCH_M for v in live.values()):
+                continue
+            along, cross = relative(me, ob["lat"], ob["lon"])
+            along += (ob.get("speed_kph") or 0) / 3.6 * (now - ob["ts"])
+            if not -SURROUND_BEHIND_M <= along <= SURROUND_AHEAD_M or abs(cross) > SURROUND_SIDE_M:
+                continue
+            n_obs += 1
+            out.append({"key": abs(hash((vid, oid))) % 100000, "along": round(along, 1), "cross": round(cross, 1),
+                        "lane": None, "speed_kph": ob.get("speed_kph") or 0, "turn": None, "role": None,
+                        "braking": False, "decel": now < ob.get("decel_until", 0), "member": False,
+                        "seen_by": len(ob["seen_by"])})
         connected = sum(1 for o, v in live.items() if o != vid and distance_m(me["lat"], me["lon"], v["lat"], v["lon"]) <= 1000)
     return {"me": {"lane": me.get("lane"), "speed_kph": me.get("speed_kph") or 0, "turn": me.get("turn"),
                    "decel": now < me.get("decel_until", 0)},
             "vehicles": out, "connected": connected, "ahead_m": SURROUND_AHEAD_M, "behind_m": SURROUND_BEHIND_M,
-            "source": "gps_beacon", "error_m": 5}
+            "source": "gps_beacon", "error_m": 5, "observed": n_obs}
 
 
 def store_info(vid):
@@ -986,6 +1122,7 @@ def lane_changes(now):
                 best, best_gap = oid, abs(ahead_of_me)
         if best and best not in intent["notified"]:
             intent["notified"].add(best)
+            mark_pair_event(vid, best, now)
             gap = round(best_gap)
             push(vid, {"kind": "lane", "type": "lane", "role": "merging", "distance_m": gap,
                        "side": intent["dir"], "ts": now})
@@ -1006,9 +1143,11 @@ def merge_done(vid, me, live, now):
     if yielder is None:
         print(f"[lane] {vid} 진입 성공 (뒤차 없음)", flush=True)
         return
-    if me.get("auto_thanks"):
+    mark_pair_event(vid, yielder, now)  # 양보를 받았다 → 이 차에게는 다시 고마워할 수 있다
+    if me.get("auto_thanks") and not me.get("emotes_off"):
         # 운전자 조작 없이 자동으로 감사 인사: 차로 변경 직후는 화면을 보면 안 되는 순간이다
-        deliver_emote(vid, yielder, "thanks", "ahead", now, auto=True)
+        if deliver_emote(vid, yielder, "thanks", "ahead", now, auto=True):
+            pair_sent[(vid, yielder)] = now
         push(vid, {"kind": "merge_done", "type": "merge_done", "auto": True, "ts": now})
     else:
         push(vid, {"kind": "merge_done", "type": "merge_done", "auto": False, "ts": now})
@@ -1103,6 +1242,7 @@ class Handler(BaseHTTPRequestHandler):
             "/rating": ("vehicle", "station", "stars"),
             "/public_status": ("station",),
             "/demo": (),
+            "/detections": ("vehicle", "objects"),
         }.get(path)
         if required is None:
             self._json(404, {"error": "not found"})
@@ -1144,6 +1284,7 @@ class Handler(BaseHTTPRequestHandler):
                     "speed_kph": body.get("speed_kph"), "lane": body.get("lane"), "turn": body.get("turn"),
                     "role": body.get("role"), "soc": body.get("soc"), "charging": body.get("charging"),
                     "dest": body.get("dest"), "auto_thanks": body.get("auto_thanks", False),
+                    "emotes_off": bool(body.get("emotes_off", False)),
                     "emote_pack": body.get("emote_pack") if body.get("emote_pack") in EMOTE_PACKS else "basic",
                     "ts": now_ts, "decel_until": decel_until,
                 }
@@ -1154,6 +1295,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, handle_emote(body))
         elif path == "/rating":
             self._json(200, handle_rating(body))
+        elif path == "/detections":
+            self._json(200, handle_detections(body))
         elif path == "/public_status":
             self._json(200, handle_public_status(body))
         elif path == "/demo":

@@ -14,7 +14,8 @@ import android.widget.TextView
 class Prefs(context: Context) {
     private val p = context.getSharedPreferences("hyperconnect", Context.MODE_PRIVATE)
 
-    /** 이모트 받기 (끄면 소리도 나지 않는다). 초보운전자는 끄고 쓸 수 있다. */
+    /** 이모트 받기. 끄면 "항상 감정표현 받지 않기": 서버가 이 차에게 아무 이모트도(자동 감사·긴급차량 감사 포함) 보내지 않고,
+     *  보낸 쪽에는 "받지 않아요"로 알린다. 초보운전자는 끄고 쓸 수 있다. */
     var receiveEmotes: Boolean
         get() = p.getBoolean("receive_emotes", true)
         set(v) = p.edit().putBoolean("receive_emotes", v).apply()
@@ -114,7 +115,7 @@ class SettingsPanel(
             addView(text(context, 26f, Color.rgb(150, 160, 175)).apply {
                 text = "운전 중 주의를 빼앗지 않도록, 이모트는 주행 중에 소리로만 알려드려요."
             })
-            addView(toggle(context, "이모트 받기", prefs.receiveEmotes) { prefs.receiveEmotes = it })
+            addView(toggle(context, "항상 감정표현 받지 않기 (보낸 쪽에는 '받지 않아요'로 표시)", !prefs.receiveEmotes) { prefs.receiveEmotes = !it })
             addView(toggle(context, "이모트 보내기 버튼 (정차·저속일 때만 표시)", prefs.emoteButtons) { prefs.emoteButtons = it })
             addView(toggle(context, "자동 감사 인사 (차로 진입 후 뒤차에게 👍)", prefs.autoThanks) { prefs.autoThanks = it })
             addView(toggle(context, "주행 중에도 연결망 화면 유지 (상위 티어 미리보기 · 내비 지도가 가려짐)", prefs.drivingView) { prefs.drivingView = it })
