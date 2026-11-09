@@ -33,6 +33,23 @@ apk/       release APK
 
 자세한 설명은 [`docs/OverRoad_통합보고서.pdf`](docs/OverRoad_통합보고서.pdf)에 있습니다. 판별 로직은 [`docs/technical_report.md`](docs/technical_report.md), 단계별 로드맵은 [`docs/philosophy.md`](docs/philosophy.md)를 보세요.
 
+## APK
+
+- 위치: [`apk/OverRoad_release.apk`](apk/OverRoad_release.apk) (release 빌드, 서명됨)
+- 패키지: `com.hyperconnect.app` · 버전 0.1.0 · minSdk 28 · targetSdk 34
+
+## 테스트 환경 및 필요한 설정
+
+| 항목 | 내용 |
+|---|---|
+| 에뮬레이터 | Pleos Connect Emulator v2.1.0 (Android 14, API 34), 시연은 2대(B·C) 동시 실행 |
+| 개발 도구 | Android Studio (내장 JDK 사용), Gradle Wrapper 포함, Kotlin |
+| Pleos SDK | Vehicle 2.3.2 · NaviHelper 3.0.5 · TextToSpeech 3.3.1 |
+| 서버 | Python 3 (추가 패키지 없음), 호스트 PC의 8080 포트 |
+| 권한 | `android.car.permission.CAR_SPEED`(속도), `POST_NOTIFICATIONS`(경고 알림) — 아래 실행 방법의 `pm grant`로 허용 |
+| 첫 실행 | 데이터 공유 동의 화면에서 동의해야 서버 연결을 시작합니다(`--ez consent true`로 건너뛸 수 있음) |
+| 확인한 성능 | 주행 중 CPU 약 1~1.5%, 메모리 약 65MB (Pleos 기준 5% 미만 · 400MB 이하) |
+
 ## 실행 방법
 
 필요한 것: Android Studio(JDK 포함), Pleos Connect Emulator(Android 14, API 34), Python 3.
