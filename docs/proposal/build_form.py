@@ -10,7 +10,7 @@ def body(t):
             f'<w:r><w:t xml:space="preserve">{escape(t)}</w:t></w:r></w:p>')
 
 def sub(t):
-    return ('<w:p><w:pPr><w:keepNext/><w:spacing w:before="100" w:after="40" w:line="300" w:lineRule="auto"/></w:pPr>'
+    return ('<w:p><w:pPr><w:spacing w:before="100" w:after="40" w:line="300" w:lineRule="auto"/></w:pPr>'
             f'<w:r><w:rPr><w:b/><w:bCs/></w:rPr><w:t xml:space="preserve">{escape(t)}</w:t></w:r></w:p>')
 
 def bullet(t):
@@ -50,5 +50,7 @@ for k in range(len(SECTIONS), 0, -1):  # 뒤에서부터 바꿔야 앞쪽 위치
     new_tc = head + render(SECTIONS[k - 1]) + '</w:tc>'
     tb2 = tb.replace(tc, new_tc)
     x = x[:t.start()] + tb2 + x[t.end():]
+# 작성란이 길면 표가 통째로 다음 쪽으로 밀리므로, 행이 쪽을 넘어 이어지게 한다
+x = x.replace('<w:cantSplit/>', '')
 open(dst, 'w', encoding='utf-8').write(x)
 print('ok')
