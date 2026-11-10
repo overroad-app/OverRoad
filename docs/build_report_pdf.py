@@ -27,7 +27,7 @@ def inline(t):
 
 
 def md_to_html(md, shift=0):
-    """이 문서들에 쓰인 마크다운만 처리한다: 제목, 문단, 목록(한 단계 들여쓰기), 표, 코드 블록, 인용, 구분선."""
+    """이 문서들에 쓰인 마크다운만 처리한다: 제목, 문단, 목록(한 단계 들여쓰기), 표, 코드 블록, 인용, 구분선, 그림."""
     out, lines, i = [], md.splitlines(), 0
     while i < len(lines):
         line = lines[i]
@@ -37,6 +37,12 @@ def md_to_html(md, shift=0):
                 j += 1
             out.append("<pre>" + html.escape("\n".join(lines[i + 1:j])) + "</pre>")
             i = j + 1
+            continue
+        m = re.match(r"!\[(.*?)\]\((.+?)\)\s*$", line)
+        if m:   # 그림: docs/ 기준 상대 경로 (HTML도 docs/에 만들어지므로 그대로 쓴다)
+            out.append(f'<figure style="margin:14px 0;text-align:center"><img src="{html.escape(m.group(2))}" style="max-width:100%;border:1px solid #e2e8f0;border-radius:8px">'
+                       f'<figcaption style="font-size:10pt;color:#64748b;margin-top:4px">{html.escape(m.group(1))}</figcaption></figure>')
+            i += 1
             continue
         m = re.match(r"(#{1,4}) (.*)", line)
         if m:

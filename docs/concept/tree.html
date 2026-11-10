@@ -1,0 +1,76 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>OverRoad 줄기와 가지</title>
+<style>
+  body{margin:0;background:#fff;font-family:"Apple SD Gothic Neo","Noto Sans KR",sans-serif;color:#0f172a}
+  .wrap{width:1600px;height:1000px;position:relative;overflow:hidden;background:linear-gradient(#f8fafc,#eef2f6)}
+  svg{position:absolute;inset:0}
+  .t{font-weight:800}
+</style></head><body><div class="wrap">
+<svg viewBox="0 0 1600 1000" xmlns="http://www.w3.org/2000/svg">
+  <!-- Tier 띠 -->
+  <g font-size="22" font-weight="800">
+    <rect x="0" y="40"  width="1600" height="150" fill="#e2e8f0" opacity=".35"/>
+    <rect x="0" y="190" width="1600" height="150" fill="#e2e8f0" opacity=".55"/>
+    <rect x="0" y="340" width="1600" height="150" fill="#e2e8f0" opacity=".8"/>
+    <rect x="0" y="490" width="1600" height="290" fill="#ccfbf1" opacity=".75"/>
+    <text x="36" y="80"  fill="#94a3b8">Tier 4 · 협력 자율주행</text>
+    <text x="36" y="230" fill="#94a3b8">Tier 3 · C-V2X · UWB · 저지연 통신</text>
+    <text x="36" y="380" fill="#64748b">Tier 2 · 센서 · ADAS · 데이터 제휴</text>
+    <text x="36" y="530" fill="#0f766e">Tier 1 · 이번 출품작</text>
+    <text x="36" y="762" fill="#0f766e" font-size="17" font-weight="600">Pleos Connect SDK + 이동통신 (에뮬레이터에서 동작)</text>
+  </g>
+  <!-- 줄기 -->
+  <path d="M800 960 L800 70" stroke="#0d9488" stroke-width="26" stroke-linecap="round"/>
+  <path d="M800 490 L800 70" stroke="#99f6e4" stroke-width="26" stroke-linecap="round" opacity=".85"/>
+  <!-- Tier 1 가지 -->
+  <g stroke="#0d9488" stroke-width="7" fill="none" stroke-linecap="round">
+    <path d="M800 740 C 700 730, 560 740, 470 720"/><path d="M800 740 C 900 730, 1040 740, 1130 720"/>
+    <path d="M800 670 C 700 660, 500 660, 380 640"/><path d="M800 670 C 900 660, 1100 660, 1220 640"/>
+    <path d="M800 600 C 720 590, 560 590, 470 565"/><path d="M800 600 C 880 590, 1040 590, 1130 565"/>
+    <path d="M800 540 C 760 525, 700 520, 660 505"/><path d="M800 540 C 840 525, 900 520, 940 505"/>
+  </g>
+  <!-- 위쪽 Tier 가지 (옅게) -->
+  <g stroke="#5eead4" stroke-width="5" fill="none" stroke-linecap="round" opacity=".8">
+    <path d="M800 420 C 740 412, 690 408, 640 395"/><path d="M800 420 C 900 410, 1040 410, 1130 395"/>
+    <path d="M800 270 C 740 262, 690 258, 640 245"/><path d="M800 270 C 900 260, 1040 260, 1130 245"/>
+    <path d="M800 120 C 720 110, 620 110, 560 100"/><path d="M800 120 C 880 110, 980 110, 1040 100"/>
+  </g>
+  <!-- 가지 끝 이름표 -->
+  <g font-size="21" font-weight="800">
+    <g fill="#fff" stroke="#0d9488" stroke-width="3">
+      <rect x="250" y="696" width="220" height="48" rx="24"/><rect x="1130" y="696" width="220" height="48" rx="24"/>
+      <rect x="160" y="616" width="220" height="48" rx="24"/><rect x="1220" y="616" width="240" height="48" rx="24"/>
+      <rect x="250" y="541" width="220" height="48" rx="24"/><rect x="1130" y="541" width="250" height="48" rx="24"/>
+      <rect x="420" y="481" width="240" height="48" rx="24"/><rect x="940" y="481" width="250" height="48" rx="24"/>
+    </g>
+    <g fill="#0f172a" text-anchor="middle">
+      <text x="360" y="727">급제동 경고</text><text x="1240" y="727">2차 사고 방지</text>
+      <text x="270" y="647">기상·노면 위험</text><text x="1340" y="647">긴급차량 길 터주기</text>
+      <text x="360" y="572">차로 변경 의도</text><text x="1255" y="572">감사 인사 · 이모트</text>
+      <text x="540" y="512">EV 충전 예측</text><text x="1065" y="512">연결이 보이는 화면</text>
+    </g>
+    <g fill="#fff" stroke="#94a3b8" stroke-width="2" opacity=".95">
+      <rect x="420" y="371" width="220" height="46" rx="23"/><rect x="1130" y="371" width="270" height="46" rx="23"/>
+      <rect x="420" y="221" width="220" height="46" rx="23"/><rect x="1130" y="221" width="270" height="46" rx="23"/>
+      <rect x="320" y="77" width="240" height="46" rx="23"/><rect x="1040" y="77" width="270" height="46" rx="23"/>
+    </g>
+    <g fill="#475569" text-anchor="middle" font-size="19" font-weight="700">
+      <text x="530" y="401">차로 단위 식별</text><text x="1265" y="401">비연동 차량 · 내비 통합</text>
+      <text x="530" y="251">가려진 시야 공유</text><text x="1265" y="251">협력 합류 · 협력 출발</text>
+      <text x="440" y="107">합성 시야</text><text x="1175" y="107">다른 차는 추가 눈</text>
+    </g>
+  </g>
+  <!-- 줄기 이름 -->
+  <g text-anchor="middle">
+    <rect x="560" y="800" width="480" height="92" rx="20" fill="#0f766e"/>
+    <text x="800" y="840" fill="#fff" font-size="30" font-weight="800">도로 위 차들의 초연결</text>
+    <text x="800" y="873" fill="#ccfbf1" font-size="20" font-weight="700">감지 → 합의 → 전파 (하나의 연결망)</text>
+  </g>
+  <!-- 뿌리 -->
+  <g stroke="#0f766e" stroke-width="6" fill="none" stroke-linecap="round" opacity=".7">
+    <path d="M800 940 C 700 955, 560 960, 420 965"/><path d="M800 940 C 900 955, 1040 960, 1180 965"/>
+  </g>
+  <g font-size="19" font-weight="700" fill="#334155" text-anchor="middle">
+    <text x="360" y="952">뿌리 ① 국내 도로에서 가장 많이 달리는 현대차그룹 차량</text>
+    <text x="1250" y="952">뿌리 ② 차가 이미 가진 신호 (브레이크·깜빡이·와이퍼·배터리…)</text>
+  </g>
+</svg></div></body></html>
