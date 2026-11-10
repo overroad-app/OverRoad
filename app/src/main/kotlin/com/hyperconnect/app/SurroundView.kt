@@ -30,6 +30,8 @@ data class Surroundings(
     val aheadM: Double, val behindM: Double, val errorM: Double,
     /** 그중 비연동 차량 수 */
     val observed: Int = 0,
+    /** 지금 주변 인식에 쓰이는 식별 층위: "gps_beacon"(Tier 1) + 주변 참여 차가 보고한 "camera"·"radar"·"lidar"(Tier 2) · "uwb"(Tier 3) */
+    val sources: Set<String> = setOf("gps_beacon"),
 )
 
 /**
@@ -218,11 +220,14 @@ class SurroundView(context: Context) : View(context) {
         return Geo(cx, yc, hw, ux, uy, cx + ux * h * 0.55f, yc + uy * h * 0.55f, cx - ux * h * 0.45f, yc - uy * h * 0.45f)
     }
 
-    /** 사다리꼴 경로. [grow]만큼 키운 같은 모양(빛·테두리용). */
+    /** 사다리꼴 경로 (옆 변은 차선과 나란하다). [grow]만큼 키운 같은 모양(빛·테두리용). */
     private fun carPath(g: Geo, grow: Float = 0f, dy: Float = 0f): Path {
-        val wb = g.hw + grow; val wt = g.hw * 0.62f + grow
-        val tx = g.tx + g.ux * grow; val ty = g.ty + g.uy * grow + dy
-        val bx = g.bx - g.ux * grow; val by = g.by - g.uy * grow + dy
+        // 옆 변이 차선과 나란하도록: 차선처럼 소실점을 향해 모이는 비율(화면 높이에 비례)로 앞·뒤 폭과 중심을 잡는다
+        val mid = width / 2f
+        val kt = (g.ty - horizonY) / (g.yc - horizonY); val kb = (g.by - horizonY) / (g.yc - horizonY)
+        val wb = g.hw * kb + grow; val wt = g.hw * kt + grow
+        val tx = mid + (g.cx - mid) * kt + g.ux * grow; val ty = g.ty + g.uy * grow + dy
+        val bx = mid + (g.cx - mid) * kb - g.ux * grow; val by = g.by - g.uy * grow + dy
         return Path().apply {
             moveTo(tx - wt, ty); lineTo(tx + wt, ty); lineTo(bx + wb, by); lineTo(bx - wb, by); close()
         }
@@ -285,7 +290,11 @@ class SurroundView(context: Context) : View(context) {
             p.color = if (mine) OWN_TOP else CAR_TOP
             c.drawPath(body, p)
             if (!mine) {
-                p.style = Paint.Style.STROKE; p.strokeWidth = 1.6f; p.color = CAR_EDGE
+                // 바로 앞차·뒤차(이모트를 받을 차)는 청록 테두리로 구분한다. 지금 보낼 수 없으면(3분 제한·받지 않기) 회색 굵은 테두리
+                val target = car?.emoteTarget != null
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = if (target) max(3.2f, 4.6f * s) else 1.6f
+                p.color = if (!target) CAR_EDGE else if (car?.emoteBlock == null) TEAL else Color.rgb(148, 160, 176)
                 c.drawPath(body, p); p.style = Paint.Style.FILL
             }
         }
@@ -364,105 +373,121 @@ class SurroundView(context: Context) : View(context) {
 
     // ---------- 이모트 대상 점선과 신호 전파 ----------
 
-    private class Pulse(val ahead: Boolean, val outgoing: Boolean, val symbol: String, val startMs: Long)
+    /**
+     * 선을 따라 오가는 신호 하나.
+     *  - 이모트: [ahead]로 받을 앞차·뒤차(서버 emote_target)를 매 프레임 찾는다.
+     *  - 경고·안내: 보낸 차가 화면에 있으면 그 차([key]), 없으면 그 방향의 화면 끝([vAlong], [vCross])에서 온다.
+     * 실제 신호는 서버를 거쳐 오지만, 화면에서는 보낸 차와 내 차를 바로 잇는 선으로 보여 준다.
+     */
+    private class Pulse(val ahead: Boolean?, val key: Int?, val vAlong: Double, val vCross: Double,
+                        val outgoing: Boolean, val symbol: String, val tint: Int, val startMs: Long)
     private val pulses = mutableListOf<Pulse>()
-    private val linkSince = mutableMapOf<Boolean, Pair<Int, Long>>()  // 앞/뒤 → (대상 key, 새로 이어진 시각)
+    private val linkSince = mutableMapOf<Int, Long>()  // 차량 key → 연결선이 새로 이어진 시각
     private val linkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+    private val dots = android.graphics.DashPathEffect(floatArrayOf(3f, 10f), 0f)
 
-    /** 이모트를 보냈거나(outgoing) 받았을 때: 점선을 따라 신호가 오간다. 대상이 화면에 없으면 그리지 않는다. */
+    /** 이모트를 보냈거나(outgoing) 받았을 때: 그 차와 완전히 이어진 점선이 잠깐 나타나고, 방향을 따라 켜지며 이모티콘이 오간다. */
     fun pulse(ahead: Boolean, outgoing: Boolean, symbol: String) {
-        pulses += Pulse(ahead, outgoing, symbol, SystemClock.elapsedRealtime())
+        pulses += Pulse(ahead, null, 0.0, 0.0, outgoing, symbol, TEAL, SystemClock.elapsedRealtime())
         if (running) postInvalidateOnAnimation()
     }
 
-    /** 내 차 → 대상 차 연결선의 양 끝: 앞차면 내 앞면 정중앙 → 그 차 뒷면 정중앙, 뒤차면 내 뒷면 정중앙 → 그 차 앞면 정중앙. */
-    private fun linkEnds(t: Track, ahead: Boolean): FloatArray {
-        val me = geo(0.0, 0.0); val o = geo(t.cross, t.along)
-        val gap = 6f
-        return if (ahead) floatArrayOf(me.tx + me.ux * gap, me.ty + me.uy * gap, o.bx - o.ux * gap, o.by - o.uy * gap)
-        else floatArrayOf(me.bx - me.ux * gap, me.by - me.uy * gap, o.tx + o.ux * gap, o.ty + o.uy * gap)
+    /**
+     * 경고·안내를 받았을 때: 보낸 차에서 내 차로 신호가 선을 타고 온다.
+     * [alongM] 내 차 기준 앞(+)·뒤(−) 거리, [crossM] 옆 거리(모르면 null → 내 차로).
+     * 그 위치 가까이에 참여 차량이 보이면 그 차에서, 화면 밖이면 그 방향의 화면 끝에서 출발한다.
+     */
+    fun signal(alongM: Double, crossM: Double?, symbol: String, tint: Int) {
+        val d = data ?: return
+        val tol = max(12.0, abs(alongM) * 0.25)
+        val src = tracks.values.filter { it.car.member && abs(it.along - alongM) <= tol && (crossM == null || abs(it.cross - crossM) <= 2.5) }
+            .minByOrNull { abs(it.along - alongM) + (if (crossM == null) abs(it.cross) else 0.0) }
+        val va = alongM.coerceIn(-d.behindM * 0.97, d.aheadM * 0.97)
+        pulses += Pulse(null, src?.car?.key, va, crossM ?: 0.0, false, symbol, tint, SystemClock.elapsedRealtime())
+        if (running) postInvalidateOnAnimation()
     }
 
+    /** 가깝다고 보는 주변 차: 앞 [NEAR_AHEAD_M]m · 뒤 [NEAR_BEHIND_M]m, 옆으로 두 차로 안의 참여 차량. */
+    private fun isNear(t: Track) = t.car.member &&
+        (t.along <= NEAR_AHEAD_M && t.along >= -NEAR_BEHIND_M && abs(t.cross) <= NEAR_SIDE_M)
+
+    /** 신호의 상대 쪽 끝점(화면 좌표). 대상이 사라졌으면 null. */
+    private fun pulseFar(pu: Pulse): Pair<Float, Float>? {
+        val t = when {
+            pu.ahead != null -> tracks.values.firstOrNull { it.car.emoteTarget == (if (pu.ahead) "ahead" else "behind") } ?: return null
+            pu.key != null -> tracks[pu.key]
+            else -> null
+        }
+        val g = if (t != null) geo(t.cross, t.along) else geo(pu.vCross, pu.vAlong)
+        return g.cx to g.yc
+    }
+
+    /**
+     * 평소의 연결 표시: 가까운 참여 차량 쪽으로 내 차 정중앙에서 회색 점선이 뻗지만, 내 차에서 멀어질수록 흐려져 사라진다
+     * ("내 주변에 있는 걸 알고 있다"는 표시일 뿐, 차마다 끝까지 이어 두면 교통량이 많을 때 화면이 그물처럼 된다).
+     * 신호가 오가는 동안에는 그 차와의 선만 [drawPulses]가 끝까지 이어진 점선으로 그린다.
+     */
     private fun drawLinks(c: Canvas, now: Long) {
-        for (ahead in listOf(true, false)) {
-            val t = tracks.values.firstOrNull { it.car.emoteTarget == (if (ahead) "ahead" else "behind") }
-            if (t == null) { linkSince.remove(ahead); continue }
-            val prev = linkSince[ahead]
-            if (prev == null || prev.first != t.car.key) linkSince[ahead] = t.car.key to now  // 차로를 바꾸면 새 차와 다시 이어진다
-            val age = now - linkSince.getValue(ahead).second
-            val a = min(1f, age / 600f)
-            val (x0, y0, x1, y1) = linkEnds(t, ahead).let { listOf(it[0], it[1], it[2], it[3]) }
-            val block = t.car.emoteBlock
-            // 새로 이어질 때는 내 차에서 대상 쪽으로 자라난다
-            val ex = x0 + (x1 - x0) * a; val ey = y0 + (y1 - y0) * a
-            linkPaint.strokeWidth = 3.2f
-            if (block == null) {
-                linkPaint.color = Color.argb((170 * a).toInt() + 40, 20, 184, 166)
-                linkPaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(4f, 11f), -((now / 40f) % 15f) * (if (ahead) 1 else -1))
-            } else {
-                // 지금은 보낼 수 없음: 흐르지 않는 회색 점선
-                linkPaint.color = Color.argb((150 * a).toInt() + 30, 148, 160, 176)
-                linkPaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(4f, 11f), 0f)
-            }
-            c.drawLine(x0, y0, ex, ey, linkPaint)
-            linkPaint.pathEffect = null
-            // 내가 받지 않기를 켠 경우는 배지 없이 회색 선만 (쿨타임처럼 꺼진 상태)
-            if (block != null && block != -2 && a >= 1f) drawBlockBadge(c, (x0 + x1) / 2, (y0 + y1) / 2, block)
-            // 대상 차 둘레 옅은 표시
-            if (a >= 1f && block == null) {
-                linkPaint.strokeWidth = 2f; linkPaint.color = Color.argb(90, 20, 184, 166)
-                val o = geo(t.cross, t.along)
-                c.drawOval(RectF(o.cx - o.hw * 1.4f, o.yc - o.hw * 0.75f, o.cx + o.hw * 1.4f, o.yc + o.hw * 0.75f), linkPaint)
-            }
+        val near = tracks.values.filter { isNear(it) }
+        linkSince.keys.retainAll(near.map { it.car.key }.toSet())
+        if (near.isEmpty()) return
+        val me = geo(0.0, 0.0)
+        val busy = pulses.mapNotNull { pu -> if (pu.ahead != null) tracks.values.firstOrNull { it.car.emoteTarget == (if (pu.ahead) "ahead" else "behind") }?.car?.key else pu.key }.toSet()
+        val radius = me.hw * FADE_RADIUS
+        linkPaint.strokeWidth = 2.6f
+        linkPaint.pathEffect = dots
+        linkPaint.color = Color.WHITE   // 페인트 알파가 셰이더에 곱해지므로 불투명으로 둔다
+        for (t in near) {
+            if (t.car.key in busy) continue
+            val since = linkSince.getOrPut(t.car.key) { now }
+            val a = min(1f, (now - since) / 600f)
+            val o = geo(t.cross, t.along)
+            // 내 차 가장자리에서 가장 진하고, 가상의 원(radius) 끝에서 완전히 사라진다
+            linkPaint.shader = android.graphics.RadialGradient(me.cx, me.yc, radius,
+                intArrayOf(Color.argb((170 * a).toInt(), 148, 160, 176), Color.argb((120 * a).toInt(), 148, 160, 176), Color.argb(0, 148, 160, 176)),
+                floatArrayOf(0f, 0.35f, 1f), android.graphics.Shader.TileMode.CLAMP)
+            c.drawLine(me.cx, me.yc, o.cx, o.yc, linkPaint)
         }
-    }
-
-    /** 점선 가운데의 작은 배지: 받지 않기면 🔕, 같은 차 제한이면 남은 시간을 줄어드는 원과 "2:41"로. */
-    private fun drawBlockBadge(c: Canvas, x: Float, y: Float, block: Int) {
-        val r = 26f
-        p.color = Color.argb(235, 255, 255, 255)
-        c.drawCircle(x, y, r + 4f, p)
-        text.textAlign = Paint.Align.CENTER; text.typeface = Typeface.DEFAULT_BOLD
-        if (block < 0) {
-            text.textSize = 26f
-            c.drawText("🔕", x, y + 9f, text)
-        } else {
-            linkPaint.strokeWidth = 4f; linkPaint.color = Color.rgb(148, 160, 176)
-            c.drawArc(RectF(x - r, y - r, x + r, y + r), -90f, -360f * block / 180f, false, linkPaint)
-            text.textSize = 15f; text.color = Color.rgb(71, 85, 105)
-            c.drawText("%d:%02d".format(block / 60, block % 60), x, y + 5f, text)
-        }
-        text.typeface = Typeface.DEFAULT
+        linkPaint.shader = null
+        linkPaint.pathEffect = null
     }
 
     private fun drawPulses(c: Canvas, now: Long) {
+        val me = geo(0.0, 0.0)
         val it = pulses.iterator()
         while (it.hasNext()) {
             val pu = it.next()
             val age = now - pu.startMs
-            if (age > PULSE_MS + 500) { it.remove(); continue }
-            val t = tracks.values.firstOrNull { tr -> tr.car.emoteTarget == (if (pu.ahead) "ahead" else "behind") } ?: continue
-            val e = linkEnds(t, pu.ahead)
+            if (age > PULSE_MS + 700) { it.remove(); continue }
+            val far = pulseFar(pu) ?: continue
             val f = min(1f, age / PULSE_MS.toFloat()).let { k -> k * k * (3 - 2 * k) }
-            val (sx, sy, tx, ty) = if (pu.outgoing) listOf(e[0], e[1], e[2], e[3]) else listOf(e[2], e[3], e[0], e[1])
+            val (sx, sy, tx, ty) = if (pu.outgoing) listOf(me.cx, me.yc, far.first, far.second) else listOf(far.first, far.second, me.cx, me.yc)
+            val r = Color.red(pu.tint); val g = Color.green(pu.tint); val b = Color.blue(pu.tint)
+            // 신호가 오가는 동안만: 흐려지는 선 대신 끝까지 이어진 점선, 지나온 구간은 방향을 따라 켜진다. 도착 뒤 서서히 꺼진다
+            val lit = if (age <= PULSE_MS) 1f else 1f - (age - PULSE_MS) / 700f
+            linkPaint.pathEffect = dots
+            linkPaint.strokeWidth = 3f
+            linkPaint.color = Color.argb((190 * lit).toInt().coerceIn(0, 255), 148, 160, 176)
+            c.drawLine(sx, sy, tx, ty, linkPaint)
+            linkPaint.strokeWidth = 4.4f
+            linkPaint.color = Color.argb((240 * lit).toInt().coerceIn(0, 255), r, g, b)
+            c.drawLine(sx, sy, sx + (tx - sx) * f, sy + (ty - sy) * f, linkPaint)
+            linkPaint.pathEffect = null
             if (age <= PULSE_MS) {
-                // 지나간 자리를 밝히는 꼬리 + 움직이는 빛 + 이모지
+                // 움직이는 빛 + 기호
                 val px = sx + (tx - sx) * f; val py = sy + (ty - sy) * f
-                linkPaint.strokeWidth = 6f; linkPaint.color = Color.argb(150, 20, 184, 166)
-                val f0 = max(0f, f - 0.25f)
-                c.drawLine(sx + (tx - sx) * f0, sy + (ty - sy) * f0, px, py, linkPaint)
-                p.color = Color.argb(70, 20, 184, 166); c.drawCircle(px, py, 46f, p)
-                p.color = Color.argb(140, 20, 184, 166); c.drawCircle(px, py, 36f, p)
+                p.color = Color.argb(70, r, g, b); c.drawCircle(px, py, 46f, p)
+                p.color = Color.argb(140, r, g, b); c.drawCircle(px, py, 36f, p)
                 p.color = Color.WHITE; c.drawCircle(px, py, 30f, p)
                 text.textAlign = Paint.Align.CENTER; text.textSize = 36f
                 c.drawText(pu.symbol, px, py + 13f, text)
             } else {
                 // 도착: 받는 쪽에서 퍼지는 고리
-                val k = (age - PULSE_MS) / 500f
-                linkPaint.strokeWidth = 4f; linkPaint.color = Color.argb((220 * (1 - k)).toInt(), 20, 184, 166)
+                val k = min(1f, (age - PULSE_MS) / 500f)
+                linkPaint.strokeWidth = 4f; linkPaint.color = Color.argb((220 * (1 - k)).toInt(), r, g, b)
                 val rr = 30f + 80f * k
                 c.drawOval(RectF(tx - rr, ty - rr * 0.5f, tx + rr, ty + rr * 0.5f), linkPaint)
-                // 도착한 이모지가 위로 살짝 떠오르며 사라진다
+                // 도착한 기호가 위로 살짝 떠오르며 사라진다
                 text.textAlign = Paint.Align.CENTER; text.textSize = 36f
                 text.alpha = (255 * (1 - k)).toInt()
                 c.drawText(pu.symbol, tx, ty - 30f - 30f * k, text)
@@ -500,7 +525,8 @@ class SurroundView(context: Context) : View(context) {
         if (usable < 420) return  // 중간 창 위 좁은 띠에서는 층위 표시를 빼서 도로를 가리지 않게
         // 식별 층위: 켜진 것만 진한 점
         text.typeface = Typeface.DEFAULT; text.textSize = 20f
-        val layers = listOf("GPS 비콘" to true, "카메라" to false, "레이더·라이다" to false, "UWB" to false)
+        val src = d.sources
+        val layers = listOf("GPS 비콘" to true, "카메라" to ("camera" in src), "레이더·라이다" to ("radar" in src || "lidar" in src), "UWB" to ("uwb" in src))
         val parts = layers.joinToString("   ") { it.first }
         val w = text.measureText(parts) + layers.size * 20f + 36f
         p.color = Color.argb(215, 255, 255, 255)
@@ -514,7 +540,8 @@ class SurroundView(context: Context) : View(context) {
             x += 18f + text.measureText(name + "   ") + 2f
         }
         text.textSize = 17f; text.color = Color.rgb(140, 150, 165)
-        c.drawText("Tier 1 · 옅은 원 = GPS 위치 오차 ±${d.errorM.toInt()}m", 46f, y + 30f, text)
+        val tier = if ("uwb" in src) "Tier 3 미리보기" else if (src.size > 1) "Tier 2 미리보기" else "Tier 1"
+        c.drawText("$tier · 옅은 원 = GPS 위치 오차 ±${d.errorM.toInt()}m", 46f, y + 30f, text)
     }
 
     companion object {
@@ -522,6 +549,11 @@ class SurroundView(context: Context) : View(context) {
         private const val CAR_W = 1.9
         private const val CAR_L = 4.6
         private const val NEAR_M = 12.0
+        private const val FADE_RADIUS = 6.5f      // 평소 연결 표시가 사라지는 가상의 원: 내 차 반폭의 몇 배
+        private val TEAL = Color.rgb(20, 184, 166)
+        private const val NEAR_AHEAD_M = 60.0
+        private const val NEAR_BEHIND_M = 40.0
+        private const val NEAR_SIDE_M = 8.0      // 옆으로 두 차로
         private const val PULSE_MS = 1100L
         private val BG = Color.rgb(238, 241, 245)
         private val ROAD = Color.rgb(222, 227, 234)

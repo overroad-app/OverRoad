@@ -2,12 +2,15 @@
 # B, C 앱을 기준 위치로 다시 띄운다. 추가 인자는 B의 am start에 그대로 붙는다 (예: 목적지).
 HC=$(cd "$(dirname "$0")/../.." && pwd)  # 저장소 루트
 ADB=~/Library/Android/sdk/platform-tools/adb
+# 직접 빌드한 디버그 APK가 있으면 그것을, 없으면 저장소의 release APK를 설치한다
 APK=$HC/app/build/outputs/apk/debug/app-debug.apk
+[ -f "$APK" ] || APK=$HC/apk/OverRoad_release.apk
 for p in 8088 8089; do python3 -I $HC/scripts/vc.py --port $p park >/dev/null; done
 # 이전 시연의 이벤트·전송 기록을 비운다 (같은 지점을 다시 시연해도 경고가 막히지 않게)
 curl -s -X POST localhost:8080/demo -H 'Content-Type: application/json' -d '{"reset": true}' >/dev/null
 for d in emulator-5554 emulator-5556; do
-  $ADB -s $d install -r $APK >/dev/null
+  # 서명이 다른 앱(디버그 ↔ release)이 이미 있으면 설치가 거절된다 → 이유를 보여 준다
+  $ADB -s $d install -r "$APK" >/dev/null || echo "[$d] 앱 설치 실패: 기존 앱과 서명이 다르면 adb uninstall --user 10 com.hyperconnect.app 후 다시 실행" >&2
   $ADB -s $d shell pm grant --user 10 com.hyperconnect.app android.car.permission.CAR_SPEED
   $ADB -s $d shell pm grant --user 10 com.hyperconnect.app android.permission.POST_NOTIFICATIONS
   $ADB -s $d logcat -c

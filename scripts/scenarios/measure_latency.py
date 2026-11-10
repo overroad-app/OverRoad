@@ -85,7 +85,7 @@ def main():
 
 측정일 {time.strftime('%Y-%m-%d')} · {len(rows)}/{n}회 성공 · `scripts/scenarios/measure_latency.py`
 
-환경: Pleos Connect 에뮬레이터 2대(B 급제동 차량, C 300m 뒤 차량) + 같은 PC의 중계 서버.
+환경: Pleos Connect 에뮬레이터 2대(B 급제동 차량, C 90m 뒤 차량) + 같은 PC의 중계 서버.
 실제 차량은 이동통신망을 거치므로 전달 구간에 수십~수백 ms가 더해질 수 있다.
 
 | 구간 (ms) | 평균 | 중앙값 | 최소 | 최대 |

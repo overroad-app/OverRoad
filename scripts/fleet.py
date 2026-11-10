@@ -18,6 +18,7 @@
         member=0                     OverRoad 비연동 차 (타사·미동의): 위치를 보내지 않는다 — 센서 장착 참여 차가 보면 화면에 나타난다
         emotes_off=1                 항상 감정표현 받지 않기
         sensor=1                     카메라·레이더 장착 참여 차 (Tier 2 미리보기): 앞 80m·뒤 40m·옆 9m 안 물체를 0.5초마다 서버에 보고
+        sensor=camera+lidar+uwb      센서 종류를 직접 지정 (camera, radar, lidar, uwb) → 기본 화면 왼쪽 위 식별 층위 표시가 켜진다
       --jam 시작 거리:대수:속도[:merge] → J1..Jn을 1~3차로에 30m 간격으로 배치
                                          (merge면 3차로가 끝나 3차로 차량이 왼쪽 깜빡이)
   python3 scripts/fleet.py weather A --rain 2 --fog
@@ -97,7 +98,8 @@ def run(args):
                       "speed_at": sorted(([float(x) for x in kv[6:].split("@")[::-1]] for part in rest_all for kv in part.split(",")
                                           if kv.startswith("speed=")), key=lambda a: a[0]),  # [(시각, 속도), ...]
                       "auto": opts.get("auto") == "1",
-                      "member": opts.get("member") != "0", "sensor": opts.get("sensor") == "1",
+                      "member": opts.get("member") != "0", "sensor": opts.get("sensor") not in (None, "0"),
+                      "sensor_kinds": ["camera", "radar"] if opts.get("sensor") in (None, "0", "1") else opts["sensor"].split("+"),
                       "emotes_off": opts.get("emotes_off") == "1"})
     if args.jam:
         start, count, speed, *kind = args.jam.split(":")
@@ -253,7 +255,7 @@ def run(args):
                         objs.append({"along": round(along + (hash((o["id"], int(now * 2))) % 7 - 3) * 0.1, 1),
                                      "cross": round(cross, 1), "speed_kph": round(o["cur"], 1)})
                 try:
-                    call("/detections", {"vehicle": v["id"], "objects": objs})
+                    call("/detections", {"vehicle": v["id"], "objects": objs, "sensors": v.get("sensor_kinds", ["camera", "radar"])})
                 except Exception:
                     pass
         time.sleep(0.25)

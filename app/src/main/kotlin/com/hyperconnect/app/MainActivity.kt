@@ -86,6 +86,11 @@ class MainActivity : Activity() {
     private lateinit var tripBar: TripView
     private lateinit var tripPill: TripView
     private var trip: Trip? = null
+    /** 전기차: 지금 출발하면 충전이 가장 빨리 끝나는 근처 충전소 (오른쪽 위 버튼, 누르면 바로 길 안내) */
+    private lateinit var quickCharge: TextView
+    private var quickPin: ChargerPin? = null
+    private var quickTick = 0
+    private var observedNow = 0
     private var tripStation: String? = null
     private var tripStartMs = 0L
     private var ratingReadyAtMs = 0L
@@ -183,6 +188,8 @@ class MainActivity : Activity() {
     private var vehicleId = DEFAULT_VEHICLE_ID
     private var lane: Int? = null
     private var speedKph = 0f
+    @Volatile private var speedKnown = false          // 속도 값을 한 번이라도 받았는가 (권한 거부·미지원이면 false)
+    @Volatile private var drivingRestricted = false   // 플랫폼 주행 규제(Distraction Optimization 요구)가 켜져 있는가
     @Volatile private var turnSignal: String? = null  // 정체 원인(합류) 판단에 쓰도록 서버와 공유
 
     // 신호 이름 -> 최신 값 (화면 표시 순서 유지)
@@ -286,6 +293,7 @@ class MainActivity : Activity() {
             val mps = (value.value as? Float) ?: return
             val kph = mps * 3.6f
             val wasSlowBefore = isSlow()
+            speedKnown = true
             if (kotlin.math.abs(kph - speedKph) >= 1f || kph == 0f) {
                 val wasSlow = isSlow()
                 speedKph = kph
@@ -360,6 +368,7 @@ class MainActivity : Activity() {
         readCurrentValues()
         registerListeners()
         handler.post(ticker)
+        handler.post(surroundTicker)
 
         car = Car.createCar(this)
         watchUxRestrictions()
@@ -392,7 +401,7 @@ class MainActivity : Activity() {
                 // 경로 안내가 끝나면 충전 예측 카드만 닫는다 (충전 완료·별점 카드는 남긴다)
                 if (destination == null && trip != null) clearTrip()
             },
-            onStatus = { Log.i(TAG, "내비 = $it") },
+            onStatus = { update("내비", it) },
         ).also { tracker ->
             tracker.start()
             // 시연용: 실행 인자로 목적지를 주면 경로 안내를 시작한다
@@ -471,8 +480,23 @@ class MainActivity : Activity() {
     }
 
     private fun applyUxRestrictions(r: CarUxRestrictions?) {
-        val restricted = r != null && r.isRequiresDistractionOptimization &&
-            (r.activeRestrictions and CarUxRestrictions.UX_RESTRICTIONS_NO_SETUP) != 0
+        val driving = r != null && r.isRequiresDistractionOptimization
+        if (driving != drivingRestricted) {
+            drivingRestricted = driving
+            if (!speedKnown) runOnUiThread {
+                updateDriverUi(SystemClock.elapsedRealtime())
+                // 속도를 모를 때는 주행 규제가 켜지는 순간을 "출발"로 보고, 속도를 알 때와 똑같이 내비 뒤로 물러난다
+                val keepView = prefs.drivingView && sheet.level == AssistantSheet.LEVEL_FULL
+                if (driving && inFront && !keepView && settings.view.visibility != View.VISIBLE && consent.view.visibility != View.VISIBLE) {
+                    Log.i(TAG, "주행 규제 시작(속도 모름): 내비가 보이도록 앱 화면을 뒤로 보냄")
+                    inFront = false
+                    sheet.snapTo(AssistantSheet.LEVEL_MINI)
+                    showNavigation()
+                }
+            }
+        }
+        val restricted = driving &&
+            (r!!.activeRestrictions and CarUxRestrictions.UX_RESTRICTIONS_NO_SETUP) != 0
         if (restricted == setupRestricted && r != null) return
         setupRestricted = restricted
         Log.i(TAG, "주행 규제 = 0x${Integer.toHexString(r?.activeRestrictions ?: 0)} (설정 화면 ${if (restricted) "잠김" else "허용"})")
@@ -484,6 +508,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(ticker)
+        handler.removeCallbacks(surroundTicker)
         KeepAliveService.stop(this)
         releaseFocus.run()
         uxManager?.unregisterListener()
@@ -771,6 +796,56 @@ class MainActivity : Activity() {
         //   (내비 위 상시 링은 Tier 2+ 컨셉 이미지: docs/concept)
     }
 
+    // ---------- 전기차: 가장 빨리 충전되는 곳 (오른쪽 위, 항상 파악해 둔다) ----------
+
+    /**
+     * 5초마다 서버의 충전소별 예측(지금 출발하면 도착 순번·대기·80% 완료 시각)을 읽어 완료가 가장 이른 곳을 골라 둔다.
+     * 전기차이고(배터리 잔량을 읽을 수 있고), 충전 중이 아니고, 이미 충전소로 안내 중이 아닐 때만.
+     */
+    private fun refreshQuickCharge() {
+        val wanted = soc != null && !charging && trip == null && pendingRating == null
+        if (!wanted) { quickPin = null; renderQuickCharge(); return }
+        if (++quickTick % QUICK_CHARGE_TICKS != 1 && quickPin != null) return
+        client?.fetchChargers { m ->
+            val best = m?.pins?.filter { it.doneMs != null }?.minByOrNull { it.doneMs!! }
+            runOnUiThread { if (soc != null && !charging && trip == null) { quickPin = best; renderQuickCharge() } }
+        }
+    }
+
+    private fun renderQuickCharge() {
+        val pin = quickPin
+        val show = pin != null && settings.view.visibility != View.VISIBLE && store.view.visibility != View.VISIBLE && consent.view.visibility != View.VISIBLE
+        quickCharge.visibility = if (show) View.VISIBLE else View.GONE
+        if (pin == null || !show) return
+        val low = (soc ?: 100) <= LOW_SOC
+        val head = if (low) "⚡ 배터리 ${soc}% · 가장 빨리 충전되는 곳" else "⚡ 가장 빨리 충전되는 곳"
+        val main = "${pin.name} · ${hm(pin.doneMs!!)} 완료"
+        val tail = "${pin.waitMin?.let { if (it > 0) "대기 ${it}분" else "대기 없음" } ?: ""} · 누르면 바로 안내"
+        quickCharge.text = android.text.SpannableString("$head\n$main\n$tail").apply {
+            setSpan(android.text.style.ForegroundColorSpan(if (low) Color.rgb(180, 83, 9) else Color.rgb(13, 148, 136)), 0, head.length, 0)
+            setSpan(android.text.style.StyleSpan(Typeface.BOLD), head.length + 1, head.length + 1 + main.length, 0)
+            setSpan(android.text.style.RelativeSizeSpan(1.25f), head.length + 1, head.length + 1 + main.length, 0)
+            setSpan(android.text.style.ForegroundColorSpan(Color.rgb(100, 116, 139)), length - tail.length, length, 0)
+        }
+        // 배터리가 적으면 주황 테두리로 눈에 띄게
+        quickCharge.background = GradientDrawable().apply {
+            setColor(Color.argb(245, 255, 255, 255)); cornerRadius = 26f
+            setStroke(if (low) 4 else 2, if (low) Color.rgb(245, 158, 11) else Color.rgb(203, 213, 225))
+        }
+        // 기본 화면 오른쪽 위 칩("주변 N대 연결" 등) 바로 아래에 둔다
+        quickCharge.translationY = surround.insetTop + 86f + (if (observedNow > 0) 52f else 0f) + (if (surround.drivingPreview) 52f else 0f)
+    }
+
+    /** 버튼을 누르면 묻지 않고 바로 그 충전소로 길 안내를 시작한다 (한 번 탭). 주행 중이면 내비를 앞으로. */
+    private fun startQuickCharge() {
+        val pin = quickPin ?: return
+        Log.i(TAG, "가장 빨리 충전되는 곳으로 안내 시작: ${pin.name} (${hm(pin.doneMs ?: 0)} 완료 예상)")
+        naviTracker?.routeTo(pin.lat, pin.lon, pin.name)
+        Toast.makeText(this, "${pin.name}(으)로 안내를 시작해요", Toast.LENGTH_SHORT).show()
+        quickPin = null; renderQuickCharge()
+        if (!isSlow()) showNavigation()
+    }
+
     /** 작은 창일 때만 이모트 바 위 알약 링을 보인다. 누르면 중간 크기(가로 막대)로. */
     private fun updateTripPill() {
         val show = trip != null && sheet.level == AssistantSheet.LEVEL_MINI && settings.view.visibility != View.VISIBLE
@@ -858,6 +933,7 @@ class MainActivity : Activity() {
         ui.postDelayed(hideEmergency, 6000L)
         // 상단 알림은 처음 다가올 때 한 번만 (거리 갱신마다 다시 띄우면 OS 알림 영역을 오래 가린다). 이후 안내는 음성과 앱 세부 정보로
         if (near.id !in announced) popup("emergency", s.title.replace("  ", " "), "뒤 ${near.distanceM}m · $action", s.bg, WARNING_SHOW_MS, fg = s.fg, stripe = s.stripe)
+        if (near.id !in announced) surround.signal(-near.distanceM.toDouble(), null, near.symbol, SIGNAL_BLUE)  // 처음 다가올 때 뒤에서 내 차로
         if (announced.add(near.id)) {
             Log.i(TAG, "긴급차량: ${s.title.trim()} / 뒤 ${near.distanceM}m / $action")
             busyUntilMs = now + 6000
@@ -903,6 +979,16 @@ class MainActivity : Activity() {
     }
 
     private fun showWarning(w: RoadWarning) {
+        // 기본 화면: 경고가 보낸 차(화면 밖이면 그 방향 끝)에서 내 차로 선을 타고 온다
+        val (symbol, tint) = when (w.type) {
+            "hard_brake" -> "🛑" to SIGNAL_RED
+            SecondaryAccidentDetector.EVENT_CRASH -> "⚠️" to SIGNAL_RED
+            "heavy_rain" -> "🌧" to SIGNAL_AMBER
+            "fog" -> "🌫" to SIGNAL_AMBER
+            "congestion" -> "🚧" to SIGNAL_AMBER
+            else -> "⚠️" to SIGNAL_AMBER
+        }
+        runOnUiThread { surround.signal(w.distanceM.toDouble(), if (w.lane == "same") 0.0 else null, symbol, tint) }
         if (w.type == "congestion") return showZone(w)
         // 멀리 있는 사고·정차 차량은 경고창 대신 구간 카드로 알리고, 가까워졌을 때만 빨간 경고를 띄운다
         if (w.type in FAR_NOTICE_TYPES && w.distanceM > RED_ALERT_M) {
@@ -1087,7 +1173,8 @@ class MainActivity : Activity() {
         emoteCard.postDelayed(hideEmote, EMOTE_SHOW_MS)
     }
 
-    private fun isSlow() = speedKph <= SLOW_KPH
+    /** 정차·저속인가. 속도를 모를 때(권한 거부 등)는 0km/h로 치지 않고 플랫폼 주행 규제를 따라 "주행 중"으로 본다. */
+    private fun isSlow() = if (speedKnown) speedKph <= SLOW_KPH else !drivingRestricted
 
     /** 경고가 떠 있거나 급제동·차로 변경 중이면 바쁜 순간: 이모트·피드백을 미룬다. */
     private fun isBusy() = warningView.visibility == View.VISIBLE || emergencyCard.visibility == View.VISIBLE ||
@@ -1097,6 +1184,8 @@ class MainActivity : Activity() {
     private fun showLane(n: LaneNotice) = runOnUiThread {
         // 진입하는 차가 왼쪽 깜빡이를 켰다면, 뒤에서 오는 차 입장에서는 오른쪽 옆에서 들어온다
         val left = (n.side == "LEFT") == n.merging
+        // 기본 화면: 내가 들어갈 때는 옆 차로 뒤차에서, 옆 차가 들어올 때는 앞쪽 옆 차에서 신호가 온다
+        surround.signal(if (n.merging) -n.distanceM.toDouble() else n.distanceM.toDouble(), if (left) -LANE_W_M else LANE_W_M, if (n.merging) "⚠️" else "↪", SIGNAL_AMBER)
         val side = if (left) "왼쪽" else "오른쪽"
         // 표현 (2026-11-08 사용자 결정 1안): "끼어들기"는 쓰지 않고, 제목에서 누가 하는지가 드러나게
         //   내가 들어갈 때 "차로 변경 주의" / 옆 차가 들어올 때 "옆 차 합류 예정"
@@ -1132,13 +1221,21 @@ class MainActivity : Activity() {
 
     private var mapTick = 0
 
+    /** 기본 화면(주변 차 위치·깜빡이·감속)은 1초 틱과 따로 0.2초마다 읽는다. 화면이 보일 때만. */
+    private val surroundTicker = object : Runnable {
+        override fun run() {
+            if (surround.visibility == View.VISIBLE && inFront)
+                client?.fetchSurroundings { s -> if (s != null) runOnUiThread { surround.update(s); updateEmoteBlocks(s) } }
+            handler.postDelayed(this, SURROUND_MS)
+        }
+    }
+
     /** 1초마다: 저속일 때만 조작 요소·지도를 보여주고, 미룬 이모트와 피드백 질문을 처리한다. */
     private fun updateDriverUi(now: Long) {
         val slow = isSlow()
         emoteBar.visibility = if (prefs.emoteButtons && slow) View.VISIBLE else View.GONE
-        // '항상 감정표현 받지 않기'를 켜면 보낼 수도 없다 → 버튼도 쿨타임처럼 흐리게 (눌러도 이유만 알려 준다)
-        val sendAlpha = if (prefs.receiveEmotes) 1f else 0.4f
-        emoteButtons.forEach { if (it.alpha != sendAlpha) it.alpha = sendAlpha }
+        paintEmoteStates()   // 버튼 흐림·타이머 (눌러도 이유만 알려 준다)
+        refreshQuickCharge()
         sheet.compact = emoteBar.visibility != View.VISIBLE
         tripPill.translationY = if (sheet.compact) (AssistantSheet.MINI_H - AssistantSheet.COMPACT_H).toFloat() else 0f
         if (!slow) mergeThanksButton.visibility = View.GONE
@@ -1155,7 +1252,7 @@ class MainActivity : Activity() {
         sheet.maxLevel = if (slow || prefs.drivingView) AssistantSheet.LEVEL_FULL else AssistantSheet.LEVEL_MID
         if (!slow && store.view.visibility == View.VISIBLE) store.view.visibility = View.GONE
         surround.drivingPreview = prefs.drivingView && !slow
-        if (surround.visibility == View.VISIBLE) client?.fetchSurroundings { s -> if (s != null) runOnUiThread { surround.update(s) } }
+        // (기본 화면 데이터는 surroundTicker가 0.2초마다 따로 읽는다)
         // 세부 정보는 창을 키웠을 때만 서버에 묻는다
         if (sheet.level != AssistantSheet.LEVEL_MINI && ++mapTick >= MAP_REFRESH_TICKS) refreshDetails()
     }
@@ -1201,7 +1298,7 @@ class MainActivity : Activity() {
         storeButton.visibility = if (full) View.VISIBLE else View.GONE
         if (!full) store.view.visibility = View.GONE
         updateSurroundInsets()
-        client?.fetchSurroundings { s -> if (s != null) runOnUiThread { surround.update(s) } }
+        client?.fetchSurroundings { s -> if (s != null) runOnUiThread { surround.update(s); updateEmoteBlocks(s) } }
     }
 
     /** 그림이 창(시트)에 가리지 않게: 전체 화면이면 제목 줄·이모트 바 사이, 그 밖에는 시트 위쪽 빈 곳에. */
@@ -1303,15 +1400,67 @@ class MainActivity : Activity() {
     // 정차 중 한 번 탭으로 보낼 수 있도록 큰 버튼 세 개만 둔다. 버튼 색은 내 이모트 팩 색
     private val emoteButtons = mutableListOf<Button>()
 
+    private class EmoteSlot(val button: Button, val emoji: String, val word: String, val toAhead: Boolean) {
+        /** 버튼 색(내 팩 색)을 왼쪽부터 얼마나 채울지 0..10000. 쿨타임 동안 회색 바탕 위로 차오른다 */
+        var fill: android.graphics.drawable.ClipDrawable? = null
+    }
+    private val emoteSlots = mutableListOf<EmoteSlot>()
+    /** 앞차·뒤차에 지금 보낼 수 없는 이유 ([SurroundCar.emoteBlock]: 양수 = 같은 차 3분 제한 남은 초, -1 = 상대가 받지 않기). 없으면 null */
+    private var blockAhead: Int? = null
+    private var blockBehind: Int? = null
+    /** 이모트를 받을 바로 앞차·뒤차가 있는가. 없으면 그 버튼은 꺼 둔다 */
+    private var hasAhead = false
+    private var hasBehind = false
+
+    /** 버튼 글자: 평소엔 "👍 고마워요 ▲ 앞차", 보낼 수 없을 땐 뒤쪽이 남은 시간("⏱ 2:41")이나 받지 않기("🔕 앞차")로 바뀐다. */
+    private fun emoteLabel(slot: EmoteSlot, block: Int?, hasTarget: Boolean = true): CharSequence {
+        val who = if (slot.toAhead) "앞차" else "뒤차"
+        val tail = when {
+            !hasTarget -> "$who 없음"
+            block == null || block == -2 -> if (slot.toAhead) "▲ $who" else "▼ $who"
+            block < 0 -> "🔕 $who"
+            else -> if (slot.toAhead) "▲ $who" else "▼ $who"   // 3분 제한: 남은 시간은 글자 대신 버튼이 차오르는 것으로 보인다
+        }
+        return android.text.SpannableString("${slot.emoji} ${slot.word}  $tail").apply {
+            val from = length - tail.length
+            setSpan(android.text.style.RelativeSizeSpan(0.8f), from, length, 0)
+            setSpan(android.text.style.ForegroundColorSpan(Color.argb(210, 255, 255, 255)), from, length, 0)
+        }
+    }
+
+    /** 기본 화면 데이터(1초마다)에서 앞차·뒤차 제한 상태를 읽어 버튼에 반영한다. 타이머는 점선이 아니라 여기서 돈다. */
+    private fun updateEmoteBlocks(s: Surroundings) {
+        val ahead = s.cars.firstOrNull { it.emoteTarget == "ahead" }
+        val behind = s.cars.firstOrNull { it.emoteTarget == "behind" }
+        hasAhead = ahead != null; hasBehind = behind != null
+        if (observedNow != s.observed) { observedNow = s.observed; renderQuickCharge() }
+        blockAhead = ahead?.emoteBlock; blockBehind = behind?.emoteBlock
+        paintEmoteStates()
+    }
+
+    private fun paintEmoteStates() {
+        for (slot in emoteSlots) {
+            val block = if (slot.toAhead) blockAhead else blockBehind
+            val hasTarget = if (slot.toAhead) hasAhead else hasBehind
+            val label = emoteLabel(slot, block, hasTarget)
+            if (slot.button.text.toString() != label.toString()) slot.button.text = label
+            // 받을 차가 없으면 버튼을 끈다(눌리지 않음). '항상 감정표현 받지 않기'를 켜면 보낼 수도 없다 → 전부 흐리게.
+            // 대상별 제한(3분·상대 받지 않기)은 그 버튼만 흐리게 (눌러서 이유는 볼 수 있다)
+            if (slot.button.isEnabled != hasTarget) slot.button.isEnabled = hasTarget
+            val alpha = if (!hasTarget) 0.3f else if (!prefs.receiveEmotes) 0.4f else if (block == -1) 0.5f else 1f
+            if (slot.button.alpha != alpha) slot.button.alpha = alpha
+            // 같은 차 3분 제한: 보낸 직후 회색으로 비고, 왼쪽에서 오른쪽으로 원래 색이 차오른다 (다 차면 다시 보낼 수 있다)
+            val level = if (block != null && block > 0) ((1f - block / EMOTE_PAIR_LIMIT_S.toFloat()).coerceIn(0f, 1f) * 10000).toInt() else 10000
+            slot.fill?.let { if (it.level != level) it.level = level }
+        }
+    }
+
     private fun emoteButton(emoji: String, word: String, name: String, toAhead: Boolean) = Button(this).apply {
         val target = if (toAhead) "▲ 앞차" else "▼ 뒤차"
         val label = "$emoji $word · ${target.drop(2)}에게"
         // 접힌 시트는 버튼 높이가 한 줄뿐이라 받는 차를 같은 줄 뒤에 작게 붙인다
-        text = android.text.SpannableString("$emoji $word  $target").apply {
-            val from = length - target.length
-            setSpan(android.text.style.RelativeSizeSpan(0.8f), from, length, 0)
-            setSpan(android.text.style.ForegroundColorSpan(Color.argb(210, 255, 255, 255)), from, length, 0)
-        }
+        val slot = EmoteSlot(this, emoji, word, toAhead).also { emoteSlots += it }
+        text = emoteLabel(slot, null)
         isAllCaps = false
         setTextColor(Color.WHITE)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
@@ -1333,7 +1482,13 @@ class MainActivity : Activity() {
 
     private fun paintEmoteButtons() {
         val pack = EmotePacks.of(prefs.emotePack)
-        emoteButtons.forEach { it.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(pack.colorTop, pack.colorBottom)).apply { cornerRadius = 36f } }
+        for (slot in emoteSlots) {
+            val base = GradientDrawable().apply { setColor(Color.rgb(176, 184, 196)); cornerRadius = 36f }   // 쿨타임 동안 보이는 회색 바탕
+            val color = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(pack.colorTop, pack.colorBottom)).apply { cornerRadius = 36f }
+            val clip = android.graphics.drawable.ClipDrawable(color, android.view.Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL).apply { level = slot.fill?.level ?: 10000 }
+            slot.fill = clip
+            slot.button.background = android.graphics.drawable.LayerDrawable(arrayOf(base, clip))
+        }
     }
 
     private fun card(bg: Int, sp: Float, fg: Int = Color.WHITE) = TextView(this).apply {
@@ -1566,6 +1721,15 @@ class MainActivity : Activity() {
         }
         infoRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36, 6, 36, 10) }
         tripBar = TripView(this, TripView.Mode.BAR).apply { visibility = View.GONE }
+        quickCharge = TextView(this).apply {
+            visibility = View.GONE
+            setTextColor(Color.rgb(15, 23, 42))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            setLineSpacing(6f, 1f)
+            setPadding(32, 20, 34, 22)
+            elevation = 8f
+            setOnClickListener { startQuickCharge() }
+        }
         tripPill = TripView(this, TripView.Mode.PILL).apply {
             visibility = View.GONE
             elevation = 14f
@@ -1619,6 +1783,8 @@ class MainActivity : Activity() {
             addView(tripPill, FrameLayout.LayoutParams(TRIP_PILL_W, TRIP_PILL_H, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
                 bottomMargin = AssistantSheet.MARGIN + AssistantSheet.MINI_H + 14
             }.also { tripPill.translationX = -(AssistantSheet.MINI_W - TRIP_PILL_W) / 2f })
+            addView(quickCharge, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.END).apply { rightMargin = 28 })
             addView(emoteCard, FrameLayout.LayoutParams(360, 360, Gravity.TOP or Gravity.START).apply { leftMargin = 28; topMargin = 124 })
             addView(appAlert, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = 18 })
@@ -1656,11 +1822,19 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        private val SIGNAL_RED = Color.rgb(220, 38, 38)
+        private val SIGNAL_AMBER = Color.rgb(217, 119, 6)
+        private val SIGNAL_BLUE = Color.rgb(37, 99, 235)
+        private const val LANE_W_M = 3.5
         private const val TAG = "HyperConnect"
         private const val EVENT_HARD_BRAKE = "hard_brake"
         private const val EVENT_WEATHER_OBS = "weather_obs"
         private const val REQUEST_SPEED = 1
         private const val TICK_MS = 1000L
+        private const val SURROUND_MS = 200L
+        private const val QUICK_CHARGE_TICKS = 5    // 가장 빨리 충전되는 곳을 다시 계산하는 주기(초)
+        private const val LOW_SOC = 20              // 이 아래면 배터리 부족으로 강조
+        private const val EMOTE_PAIR_LIMIT_S = 180   // 서버의 같은 차 제한(3분)과 같은 값
         // 상단 알림은 OS 공용 영역을 가리므로 짧게: 위험 4초, 안내 5초 (음성이 함께 나온다)
         private const val WARNING_SHOW_MS = 4000L
         private const val TRIP_PILL_W = 440

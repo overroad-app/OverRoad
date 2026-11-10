@@ -154,7 +154,6 @@ class HyperConnectClient(
         }, "hc-rating").start()
     }
 
-    /** 받은 경고가 맞았는지 알린다 (보고한 차량의 신뢰 점수에 반영). */
     /** 데이터 공유 동의 철회: 서버에 이 차량의 데이터를 지우도록 요청한다. */
     fun forget(onDone: (Boolean) -> Unit) {
         Thread({
@@ -171,7 +170,11 @@ class HyperConnectClient(
 
     /** 내 기여 통계를 가져온다. */
     /** 주변 차량 시각화용 상대 위치 (전체 화면이 보일 때만 1초마다 부른다). */
+    private val surroundBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 기본 화면 데이터. 초당 5번 부르므로, 앞선 요청이 아직 끝나지 않았으면 이번 것은 건너뛴다(요청이 쌓이지 않게). */
     fun fetchSurroundings(onResult: (Surroundings?) -> Unit) {
+        if (!surroundBusy.compareAndSet(false, true)) return
         Thread({
             val result = try {
                 val conn = URL("$baseUrl/surroundings?vehicle=${URLEncoder.encode(vehicleId, "UTF-8")}").openConnection() as HttpURLConnection
@@ -204,11 +207,14 @@ class HyperConnectClient(
                         connected = o.optInt("connected"), aheadM = o.optDouble("ahead_m", 200.0),
                         behindM = o.optDouble("behind_m", 86.0), errorM = o.optDouble("error_m", 5.0),
                         observed = o.optInt("observed"),
+                        sources = o.optJSONArray("sources")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: setOf("gps_beacon"),
                     )
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "주변 차량 조회 실패", e)
                 null
+            } finally {
+                surroundBusy.set(false)
             }
             onResult(result)
         }, "hc-surround").start()
@@ -440,6 +446,6 @@ class HyperConnectClient(
     companion object {
         private const val TAG = "HyperConnect"
         private const val RETRY_MS = 2000L
-        private const val POSITION_INTERVAL_MS = 1000L
+        private const val POSITION_INTERVAL_MS = 200L   // 위치·깜빡이·속도를 초당 5번 보낸다. 실측(에뮬레이터, 주행 중 한 코어 기준): 1초 1.3% · 0.25초 2.4% · 0.1초 4.8% (Pleos 기준 5% 미만)
     }
 }

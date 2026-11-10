@@ -32,6 +32,8 @@ class NaviTracker(
     private var polling = false
     private var connected = false
     private var pendingRoute: RouteInfo? = null
+    private var stopped = false
+    private val retry = Runnable { if (!stopped && !connected) start() }
 
     /** 진행 중인 경로 안내를 끝낸다 (시연 정리용). */
     fun cancelRoute() = try {
@@ -79,6 +81,7 @@ class NaviTracker(
         navi.initialize(
             onConnected = {
                 Log.i(TAG, "NaviHelper 연결됨")
+                onStatus("연결됨")
                 navi.addListener(listener)
                 connected = true
                 pendingRoute?.let { navi.requestRoute(it) }
@@ -87,15 +90,20 @@ class NaviTracker(
                 handler.post(poll)
             },
             onFailed = {
-                Log.w(TAG, "NaviHelper 연결 실패", it)
-                onStatus("연결 실패")
+                // 부팅 직후처럼 내비 서비스가 아직 준비되지 않았을 수 있다 → 몇 초 뒤 다시 연결한다
+                Log.w(TAG, "NaviHelper 연결 실패, ${RETRY_MS / 1000}초 뒤 재시도", it)
+                onStatus("연결 실패 · 재시도 중")
+                handler.removeCallbacks(retry)
+                if (!stopped) handler.postDelayed(retry, RETRY_MS)
             },
         )
     }
 
     fun stop() {
+        stopped = true
         polling = false
         handler.removeCallbacks(poll)
+        handler.removeCallbacks(retry)
         navi.removeListener(listener)
         navi.release()
     }
@@ -103,5 +111,6 @@ class NaviTracker(
     companion object {
         private const val TAG = "HyperConnect"
         private const val POLL_MS = 1000L
+        private const val RETRY_MS = 4000L
     }
 }

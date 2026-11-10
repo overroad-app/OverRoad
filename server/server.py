@@ -29,6 +29,7 @@ import json
 import math
 import threading
 import time
+import traceback
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -43,7 +44,7 @@ WEATHER_WINDOW_S = 300    # 기상 관측이 유효한 기간 (차량은 상태�
 WEATHER_ZONE_M = 1000     # 같은 기상 구간으로 보는 거리
 
 # 기상 확정 (rev2): "2대 합의"가 아니라 한 지역의 많은 차량이 거의 동시에 와이퍼를 켜는 순간(동시 다발)을 잡는다.
-#   min_onsets : BURST_WINDOW_S 안에 새로 켠(꺼짐 → 켜짐) 서로 다른 차량 수 (신뢰 가중)
+#   min_onsets : BURST_WINDOW_S 안에 새로 켠(꺼짐 → 켜짐) 서로 다른 차량 수
 #   share      : 그 지역(SHARE_RADIUS_M) 참여 차량 중 지금 같은 관측을 하는 비율
 #   한 대의 세차·워셔액, 터널 출구 한두 대는 걸러지고, 실제 소나기는 지역 차량이 몇십 초 안에 함께 반응한다.
 BURST_WINDOW_S = 90
@@ -57,6 +58,17 @@ WEATHER_END_SHARE = 0.3   # 확정된 구간은 관측 비율이 이 아래로 �
 WEATHER_LABELS = {"heavy_rain": "폭우", "fog": "안개", "slippery": "미끄러운 노면"}
 weather_onsets = {}       # (차량, 위험) -> 꺼짐에서 켜짐으로 바뀐 시각
 weather_zones = {}        # 구간 ID -> 확정된 기상 구간 (외부 피드로도 내보낸다)
+
+# 경고 대상은 진행 방향 거리만이 아니라 옆으로 떨어진 거리도 본다 (나란한 다른 도로의 차를 걸러 낸다).
+# 도로가 휘어 있으면 멀수록 옆으로 벌어지므로, 허용 폭 = 기본 폭 + 진행 방향 거리의 25%.
+CORRIDOR_BASE_M = 60          # 사고·급제동·긴급차량: 같은 도로 폭 + GPS 오차
+CORRIDOR_WEATHER_M = 500      # 기상은 지역 단위라 넓게
+CORRIDOR_SLOPE = 0.25
+
+
+def in_corridor(along, cross, base=CORRIDOR_BASE_M):
+    return abs(cross) <= base + CORRIDOR_SLOPE * abs(along)
+
 
 # 이벤트 종류별 전파 규칙
 #   min_reports : 확정에 필요한 서로 다른 차량 수 (프로토타입은 즉시성 이벤트 1대)
@@ -247,6 +259,9 @@ def propagate(event, reporters, now, verbose=True):
         if along > rule["radius_m"]:
             decisions[vid] = f"반경 밖 {round(along)}m"
             continue
+        if not in_corridor(along, cross, CORRIDOR_WEATHER_M if event["type"] in WEATHER_RULES else CORRIDOR_BASE_M):
+            decisions[vid] = f"다른 도로(옆으로 {round(abs(cross))}m)"
+            continue
         if "horizon_s" in rule:
             reach = max(rule["min_m"], (v.get("speed_kph") or 0) / 3.6 * rule["horizon_s"])
             if along > reach:
@@ -297,7 +312,7 @@ def handle_report(event):
                   and distance_m(r["lat"], r["lon"], event["lat"], event["lon"]) <= CLUSTER_RADIUS_M]
         reporters = {r["vehicle"] for r in nearby}
         if not consensus_met(reporters, RULES[event["type"]]["min_reports"]):
-            print(f"  신뢰 합의 부족 (보고 {len(reporters)}대) → 확정 대기", flush=True)
+            print(f"  합의 부족 (보고 {len(reporters)}대) → 확정 대기", flush=True)
             return False, []
         event["event_id"] = f"{event['type']}-{event['vehicle']}-{int(now * 1000)}"
         record = {k: event.get(k) for k in ("type", "vehicle", "lat", "lon", "lane", "ts", "event_id")}
@@ -533,7 +548,7 @@ def forget(vid):
 
 
 def score(vid):
-    """베스트 드라이버 점수: 도운 차량 수와 받은 감사, 경고 정확도를 함께 본다 (👍 몰아주기만으로는 오르기 어렵게)."""
+    """베스트 드라이버 점수: 도운 차량 수와 받은 감사를 함께 본다 (👍 몰아주기만으로는 오르기 어렵게)."""
     s = stats[vid]
     return s["helped"] + 2 * s["emotes"]["thanks"] + s["emotes"]["hello"]
 
@@ -837,6 +852,10 @@ observed = {}          # "S1" -> {"lat", "lon", "heading", "speed_kph", "ts", "s
 observed_seq = [0]
 
 
+SENSOR_LAYERS = ("camera", "radar", "lidar", "uwb")   # GPS 비콘(Tier 1) 위에 더해지는 식별 층위 (Tier 2~3)
+sensor_layers = {}     # 센서 보고 차량 -> (센서 종류 집합, 마지막 보고 시각)
+
+
 def handle_detections(body):
     """참여 차량이 카메라·레이더로 본 물체 목록을 받는다 (Tier 2 미리보기: 지금 Pleos SDK에는 센서 물체 API가 없다).
     물체마다 (1) 참여 차량과 겹치면 버리고(이미 위치를 직접 보내는 차) (2) 이미 등록한 비연동 차량과 겹치면 갱신,
@@ -847,6 +866,9 @@ def handle_detections(body):
         me = live.get(body["vehicle"])
         if not me:
             return {"ok": False}
+        # 이 차가 어떤 센서로 봤는지 (기본 화면의 식별 층위 표시에 쓴다). 안 보내면 카메라·레이더로 본다
+        kinds = {k for k in body.get("sensors", ["camera", "radar"]) if k in SENSOR_LAYERS}
+        sensor_layers[body["vehicle"]] = (kinds, now)
         matched, new, updated = 0, 0, 0
         for o in body.get("objects", []):
             lat, lon = absolute(me, o["along"], o["cross"])
@@ -931,7 +953,12 @@ def surroundings(vid):
     return {"me": {"lane": me.get("lane"), "speed_kph": me.get("speed_kph") or 0, "turn": me.get("turn"),
                    "decel": now < me.get("decel_until", 0)},
             "vehicles": out, "connected": connected, "ahead_m": SURROUND_AHEAD_M, "behind_m": SURROUND_BEHIND_M,
-            "source": "gps_beacon", "error_m": 5, "observed": n_obs}
+            "source": "gps_beacon", "error_m": 5, "observed": n_obs,
+            # 지금 내 주변 인식에 쓰이고 있는 식별 층위: GPS 비콘 + 주변(나 포함) 참여 차가 최근 보고한 센서 종류
+            "sources": ["gps_beacon"] + sorted({k for sv, (kinds, ts) in sensor_layers.items()
+                                               if now - ts <= OBS_TTL_S and sv in live
+                                               and distance_m(me["lat"], me["lon"], live[sv]["lat"], live[sv]["lon"]) <= SURROUND_AHEAD_M
+                                               for k in kinds})}
 
 
 def store_info(vid):
@@ -990,7 +1017,9 @@ def charging_forecasts(now):
                 continue
             ratio = (distance_m(v["lat"], v["lon"], other["lat"], other["lon"])
                      / max(1.0, distance_m(v["lat"], v["lon"], c["lat"], c["lon"])))
-            alt_f = charger_state(other, live, now, (vid, f["eta_s"] * ratio, soc_on_arrival(v, other)))["forecast"][vid]
+            alt_f = charger_state(other, live, now, (vid, f["eta_s"] * ratio, soc_on_arrival(v, other)))["forecast"].get(vid)
+            if alt_f is None:
+                continue
             if alt_f["done_ts"] + 300 < f["done_ts"] and (alt is None or alt_f["done_ts"] < alt["done_ts"]):
                 alt = {"name": other["name"], "wait_min": round(alt_f["wait_s"] / 60), "done_ts": alt_f["done_ts"]}
         item = {"kind": "charging", "type": "charging", "station": c["name"], "station_id": c["id"],
@@ -1029,7 +1058,10 @@ def emergency_yield(now):
         for vid, v in live.items():
             if vid == em_id or not same_direction(v["heading"], em["heading"]):
                 continue
-            behind = -relative(v, em["lat"], em["lon"])[0]  # 긴급차량이 내 뒤 몇 m에 있는가
+            em_along, em_cross = relative(v, em["lat"], em["lon"])
+            behind = -em_along  # 긴급차량이 내 뒤 몇 m에 있는가
+            if not in_corridor(em_along, em_cross) and (em_id, vid) not in emergency_sent:
+                continue        # 나란한 다른 도로의 긴급차량은 알리지 않는다
             key = (em_id, vid)
             item = {"kind": "emergency", "type": "emergency", "id": em_id, "role": role, "label": label, "symbol": symbol,
                     "distance_m": round(behind), "lane": lane_relation(v.get("lane"), em.get("lane")), "ts": now}
@@ -1073,8 +1105,10 @@ def close_alerts(now):
                 continue
             if zone and now - zone_close_sent.get(vid, 0) < ZONE_CLOSE_COOLDOWN_S:
                 continue
-            along, _ = relative(v, lat, lon)
-            if 0 < along <= CLOSE_ALERT_M:
+            along, cross = relative(v, lat, lon)
+            if e.get("heading") is not None and not same_direction(v["heading"], e["heading"]):
+                continue        # 반대 방향 차는 그 지점을 만나지 않는다
+            if 0 < along <= CLOSE_ALERT_M and in_corridor(along, cross):
                 close_sent.add(key)
                 if zone:
                     zone_close_sent[vid] = now
@@ -1161,13 +1195,17 @@ def road_loop():
         time.sleep(1)
         now = time.time()
         with lock:
-            current_zones = detect_zones(now)
-            zone_notices(now)
-            weather_loop(now)
-            charging_forecasts(now)
-            emergency_yield(now)
-            close_alerts(now)
-            lane_changes(now)
+            # 한 단계에서 예외가 나도 나머지 단계와 다음 주기는 계속 돈다 (루프가 죽으면 모든 판단이 조용히 멈춘다)
+            try:
+                current_zones = detect_zones(now)
+            except Exception:
+                traceback.print_exc()
+            for step in (zone_notices, weather_loop, charging_forecasts, emergency_yield, close_alerts, lane_changes):
+                try:
+                    step(now)
+                except Exception:
+                    print(f"[road_loop] {step.__name__} 실패", flush=True)
+                    traceback.print_exc()
 
 
 DASHBOARD = Path(__file__).with_name("dashboard.html")
@@ -1262,6 +1300,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/position":
+            # 위치·방향이 숫자가 아니면 받지 않는다 (잘못된 값이 레지스트리에 들어가면 1초 판단 루프가 계산하다 실패한다)
+            num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+            dest = body.get("dest")
+            if (not all(num(body.get(k)) for k in ("lat", "lon", "heading"))
+                    or not (body.get("speed_kph") is None or num(body["speed_kph"]))
+                    or not (body.get("lane") is None or (isinstance(body["lane"], int) and not isinstance(body["lane"], bool)))
+                    or not (body.get("soc") is None or num(body["soc"]))
+                    or not (dest is None or (isinstance(dest, dict) and num(dest.get("lat")) and num(dest.get("lon"))))):
+                self._json(400, {"error": "invalid position fields"})
+                return
             with lock:
                 prev = vehicles.get(body["vehicle"], {})
                 turn, lane = body.get("turn"), body.get("lane")
@@ -1302,10 +1350,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/demo":
             if body.pop("reset", False):  # 시연을 다시 시작할 때: 이벤트·전송 기록을 비운다 (같은 지점 재시연이 '최근 전송함'에 막히지 않게)
                 with lock:
-                    for table in (events, alerts, reports, sent, close_sent, zone_close_sent, weather_zones, weather_onsets, weather_obs):
+                    for table in (events, alerts, reports, sent, close_sent, zone_close_sent, weather_zones, weather_onsets, weather_obs,
+                                  pair_sent, pair_event, emote_times, emergency_sent, charging_sent, lane_intents):  # 이모트 제한·긴급차량·충전 안내 기록도 함께
                         table.clear()
                 print("[demo] 이벤트·전송 기록 초기화", flush=True)
-            if body.pop("reset_stats", False):  # 신뢰도가 쌓이는 과정을 처음부터 보여 줄 때
+            if body.pop("reset_stats", False):  # 기여 통계를 처음부터 보여 줄 때
                 with lock:
                     for table in (stats, report_log):
                         table.clear()
@@ -1349,8 +1398,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b": ping\n\n")  # 연결 유지
                 for item in items:
                     self.wfile.write(f"data: {json.dumps(item, ensure_ascii=False)}\n\n".encode())
-                    if item.get("kind") not in ("emote", "charging", "emergency", "lane", "merge_done"):
-                        print(f"[notify] -> {vid}: {item['type']} {item['distance_m']}m ({item['lane']})", flush=True)
+                    if "distance_m" in item and item.get("kind") not in ("emote", "charging", "emergency", "lane", "merge_done"):
+                        print(f"[notify] -> {vid}: {item.get('type')} {item['distance_m']}m ({item.get('lane')})", flush=True)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass

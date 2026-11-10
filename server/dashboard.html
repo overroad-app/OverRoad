@@ -28,7 +28,7 @@
 <canvas id="road"></canvas>
 <div class="row">
   <div class="card"><h2>차량 레지스트리</h2>
-    <table><thead><tr><th>ID</th><th>차로</th><th>속도</th><th>위치(전방 m)</th><th>기여</th><th>받은 👍</th><th>신뢰도</th><th>상태</th></tr></thead><tbody id="reg"></tbody></table>
+    <table><thead><tr><th>ID</th><th>차로</th><th>속도</th><th>위치(전방 m)</th><th>기여</th><th>받은 👍</th><th>상태</th></tr></thead><tbody id="reg"></tbody></table>
   </div>
   <div class="card"><h2>경고 전파 기록</h2><div id="log"></div></div>
   <div class="card"><h2>충전소 (현재 · 향하는 EV)</h2>
@@ -132,7 +132,7 @@ function table(s) {
   document.getElementById("reg").innerHTML = Object.entries(s.vehicles).sort().map(([id, v]) =>
     `<tr><td>${id}</td><td>${v.lane ?? "-"}</td><td>${Math.round(v.speed_kph || 0)} km/h</td>` +
     `<td>${Math.round(along(v.lat, lat0))}</td>` +
-    `<td>${s.stats?.[id]?.helped ?? 0}대</td><td>${s.stats?.[id]?.emotes?.thanks ?? 0}</td><td>${Math.round((s.stats?.[id]?.trust ?? 0.5) * 100)}%</td>` +
+    `<td>${s.stats?.[id]?.helped ?? 0}대</td><td>${s.stats?.[id]?.emotes?.thanks ?? 0}</td>` +
     `<td class="${warned.has(id) ? "warn" : ""}">${warned.has(id) ? "경고 수신" : "정상"}</td></tr>`).join("");
   document.getElementById("log").innerHTML = s.alerts.slice().reverse().slice(0, 10).map(a =>
     `<div>${new Date(a.ts * 1000).toLocaleTimeString()} · <b>${a.to}</b> ← ${describe(a)} ${a.distance_m}m 앞 (${LANE_LABEL[a.lane]})</div>`).join("")

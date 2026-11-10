@@ -1,5 +1,5 @@
 #!/bin/bash
-# Virtual Console API로 차량 A의 급제동을 재현한다.
+# Virtual Console API로 에뮬레이터 차량(기본 8088 포트 = B)의 급제동을 재현한다.
 #   D 기어 → 80km/h까지 가속 → 브레이크를 밟고 약 1.5초 만에 20km/h로 감속 → 위험을 피한 뒤 다시 60km/h로 주행 (멈추지 않는다)
 # 사용법: scripts/hard_brake.sh [Virtual Console 주소, 기본 http://127.0.0.1:8088]
 set -euo pipefail

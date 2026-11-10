@@ -39,6 +39,8 @@
 
     <application
         android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
         android:usesCleartextTraffic="true">
 
@@ -60,6 +62,7 @@
         <activity
             android:name=".MainActivity"
             android:theme="@style/Theme.HyperConnect.Floating"
+            android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode|keyboard|keyboardHidden|navigation"
             android:exported="true">
             <intent-filter>
