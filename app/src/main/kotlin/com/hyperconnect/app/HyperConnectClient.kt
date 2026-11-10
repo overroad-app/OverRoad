@@ -207,6 +207,7 @@ class HyperConnectClient(
                         connected = o.optInt("connected"), aheadM = o.optDouble("ahead_m", 200.0),
                         behindM = o.optDouble("behind_m", 86.0), errorM = o.optDouble("error_m", 5.0),
                         observed = o.optInt("observed"),
+                        far = o.optJSONArray("far")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).let { p -> p.getDouble("along") to p.getDouble("cross") } } } ?: emptyList(),
                         sources = o.optJSONArray("sources")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: setOf("gps_beacon"),
                     )
                 }
@@ -220,7 +221,7 @@ class HyperConnectClient(
         }, "hc-surround").start()
     }
 
-    /** 이모트 상점: 장착 중인 팩과 가진 팩. */
+    /** 이모트 스토어: 장착 중인 팩과 가진 팩. */
     fun fetchStore(onResult: (StoreInfo?) -> Unit) {
         Thread({
             val result = try {
@@ -233,7 +234,7 @@ class HyperConnectClient(
                 StoreInfo(o.optString("equipped", "basic"),
                     (0 until a.length()).map { a.getJSONObject(it) }.filter { it.optBoolean("owned") }.map { it.getString("id") }.toSet())
             } catch (e: Exception) {
-                Log.w(TAG, "상점 조회 실패", e)
+                Log.w(TAG, "스토어 조회 실패", e)
                 null
             }
             onResult(result)

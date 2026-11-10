@@ -15,8 +15,8 @@ for d in emulator-5554 emulator-5556; do
   $ADB -s $d shell pm grant --user 10 com.hyperconnect.app android.permission.POST_NOTIFICATIONS
   $ADB -s $d logcat -c
 done
-$ADB -s emulator-5554 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id B --ei lane 2 --ed offset_m 0 "$@" >/dev/null
-$ADB -s emulator-5556 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id C --ei lane 2 --ed offset_m -${C_GAP:-300} >/dev/null
+$ADB -s emulator-5554 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id B --ei lane 2 --ed offset_m 0 --es emote_pack basic "$@" >/dev/null
+$ADB -s emulator-5556 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id C --ei lane 2 --ed offset_m -${C_GAP:-300} --es emote_pack basic >/dev/null
 for i in $(seq 1 40); do
   curl -s localhost:8080/status | python3 -c "
 import sys,json
@@ -24,6 +24,7 @@ v=json.load(sys.stdin)['vehicles']
 sys.exit(0 if {'B','C'}<=set(v) and abs(v['B']['lat']-37.4127212)<2e-5 and abs((v['C']['lat']-v['B']['lat'])*111320+${C_GAP:-300})<3 else 1)" && break
   sleep 1
 done
+# 이모트 팩은 기본으로 시작한다 (앞 시나리오에서 장착한 팩이 남아 장면마다 버튼 색이 달라지지 않게)
 # NAV_FRONT="B C": 그 차량은 내비를 앞에 띄워 주행 중 화면처럼 둔다 (경고는 내비 위 상단 알림으로 보인다)
 sleep 2
 for v in ${NAV_FRONT:-}; do

@@ -30,6 +30,8 @@ for v in 45 30; do $VC --port 8088 drive $v >/dev/null; $VC --port 8089 drive $v
 sleep 2.5
 for v in 45 60; do $VC --port 8088 drive $v >/dev/null; $VC --port 8089 drive $v >/dev/null; sleep 1; done
 sleep 7
+# 구급차가 지나가면 길을 열어 준 차에게 '긴급차량 감사'가 온다 → 그 👍가 선을 타고 들어오는 것까지 담는다
+bash $S/wait_log.sh emulator-5554 "길을 열어 줘서" 25; sleep 3
 $ADB -s emulator-5554 exec-out screencap -p > "$SHOT/surround_drive_b.png"
 bash $S/mark.sh out
 $ADB -s emulator-5554 logcat -d | grep -E "경고 수신|주행 시작" | sed 's/.*HyperConnect: //' | tail -3

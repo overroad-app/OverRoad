@@ -34,13 +34,13 @@ for d in emulator-5554 emulator-5556; do
   $ADB -s $d logcat -c
 done
 echo "--- C: 판교역 충전소에서 충전 시작 (SoC 35%)"
-$ADB -s emulator-5556 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id C --ei lane 2 $PANGYO >/dev/null
+$ADB -s emulator-5556 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id C --ei lane 2 --es emote_pack basic $PANGYO >/dev/null
 sleep 5
 $VC --port 8089 charge on >/dev/null
 echo "--- B: 판교역 충전소로 경로 설정 (SoC 30%)"
 for try in 1 2 3; do   # 내비가 막 다시 켜진 직후면 경로 요청이 빠질 수 있어, 충전 예측이 올 때까지 다시 요청한다
   $ADB -s emulator-5554 logcat -c
-  $ADB -s emulator-5554 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id B --ei lane 2 \
+  $ADB -s emulator-5554 shell am start -S -n com.hyperconnect.app/.MainActivity --ez consent true --es vehicle_id B --ei lane 2 --es emote_pack basic \
     --ed dest_lat 37.4020 --ed dest_lon 127.1080 >/dev/null
   bash $S/wait_log.sh emulator-5554 "충전 예측" 25 && break
   echo "  (충전 예측 없음 → 경로 다시 요청 $try)"

@@ -17,7 +17,7 @@ import android.widget.TextView
 data class StoreInfo(val equipped: String, val owned: Set<String>)
 
 /**
- * 이모트 상점 (정차 중 전체 화면에서만 연다): 기본 · 현대차 오리지널 · 특별 지급 · 창작마당 · 내 보관함.
+ * 이모트 스토어 (정차 중 전체 화면에서만 연다): 기본 · 현대차 오리지널 · 특별 지급 · 창작마당 · 내 보관함.
  * 모든 팩은 미리 들어 볼 수 있고, 가진 팩만 장착한다. 구매는 Pleos 결제 SDK 출시 후 (지금은 안내만).
  * 표현은 고마워요·미안해요·안녕 세 가지로 고정 — 팩은 소리와 정차 중 애니메이션만 바꾼다(자유 문구 없음).
  */
@@ -47,7 +47,7 @@ class StorePanel(
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(text(context, 34f, Color.rgb(15, 23, 42), bold = true).apply { text = "이모트 상점" })
+            addView(text(context, 34f, Color.rgb(15, 23, 42), bold = true).apply { text = "이모트 스토어" })
             addView(text(context, 19f, Color.rgb(100, 116, 139)).apply { text = "  정차 중에만 열려요"; setPadding(12, 0, 0, 0) },
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             addView(equippedChip)

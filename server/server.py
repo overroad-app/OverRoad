@@ -18,7 +18,7 @@
   GET  /chargers?vehicle=B                충전소 지도: 모든 충전소의 별점·혼잡·이 차량의 예상 완료 시각
   GET  /nearby?vehicle=B                 앱 세부 정보 화면: 주변 기상·사고·긴급차량·연결 차량 수
   GET  /feed/weather[?format=geojson]     외부 제공용 기상 위험 구간 피드 (현대차 내비·외부 서비스가 가져간다)
-  GET  /store?vehicle=B                   이모트 상점: 팩 목록·보유·장착 (POST /store/buy 는 결제 SDK 출시 전까지 안내만)
+  GET  /store?vehicle=B                   이모트 스토어: 팩 목록·보유·장착 (POST /store/buy 는 결제 SDK 출시 전까지 안내만)
   GET  /surroundings?vehicle=B           주변 차량 시각화: 같은 방향 앞 200m·뒤 86m 안 차량의 상대 위치 (ID는 익명)
   (서버가 1초마다 사고 정체 구간, 기상 구간, EV 충전 대기 예측, 긴급차량 접근을 계산해 해당 차량에 보낸다)
   GET  /status                            차량 레지스트리·최근 이벤트·경고
@@ -143,7 +143,7 @@ pair_event = {}    # frozenset({차, 차}) -> 둘 사이에 마지막으로 새 
 EMOTES = {"thanks": "👍", "sorry": "🙏", "hello": "👋"}
 # 이모트 팩: 같은 세 가지 표현을 팩마다 다른 소리·그림으로 전한다. 받는 쪽은 보낸 차의 팩 소리를 듣는다
 # (받아 본 소리가 구매로 이어지는 구조). 유료 팩도 주행 중에는 소리만, 판매는 Pleos 결제 SDK 출시 후.
-# 이모트 상점 (2026-11-08): 기본 · 현대차 오리지널(유료) · 특별 지급(판매 안 함, 조건 충족 시) · 창작마당(심사 통과작, 유료)
+# 이모트 스토어 (2026-11-08): 기본 · 현대차 오리지널(유료) · 특별 지급(판매 안 함, 조건 충족 시) · 창작마당(심사 통과작, 유료)
 # 유료 구매는 Pleos 결제 SDK 출시 후. 지금은 보유(무료·지급)한 팩만 장착할 수 있고, 모든 팩은 미리 들어 볼 수 있다.
 STORE = [
     {"id": "basic", "name": "기본", "section": "basic", "maker": "OverRoad", "price": 0},
@@ -950,10 +950,20 @@ def surroundings(vid):
                         "braking": False, "decel": now < ob.get("decel_until", 0), "member": False,
                         "seen_by": len(ob["seen_by"])})
         connected = sum(1 for o, v in live.items() if o != vid and distance_m(me["lat"], me["lon"], v["lat"], v["lon"]) <= 1000)
+        # 화면 범위 밖이지만 연결된 차(1km 안): 위치만 준다 → 화면에서 그 방향으로 흐려지는 점선을 그린다 ("멀지만 연결돼 있다")
+        far = []
+        for oid, v in live.items():
+            if oid == vid or distance_m(me["lat"], me["lon"], v["lat"], v["lon"]) > 1000:
+                continue
+            f_along, f_cross = relative(me, v["lat"], v["lon"])
+            inside = same_direction(me["heading"], v["heading"]) and -SURROUND_BEHIND_M <= f_along <= SURROUND_AHEAD_M and abs(f_cross) <= SURROUND_SIDE_M
+            if not inside:
+                far.append({"along": round(f_along), "cross": round(f_cross)})
+        far = sorted(far, key=lambda p: abs(p["along"]) + abs(p["cross"]))[:30]
     return {"me": {"lane": me.get("lane"), "speed_kph": me.get("speed_kph") or 0, "turn": me.get("turn"),
                    "decel": now < me.get("decel_until", 0)},
             "vehicles": out, "connected": connected, "ahead_m": SURROUND_AHEAD_M, "behind_m": SURROUND_BEHIND_M,
-            "source": "gps_beacon", "error_m": 5, "observed": n_obs,
+            "source": "gps_beacon", "error_m": 5, "observed": n_obs, "far": far,
             # 지금 내 주변 인식에 쓰이고 있는 식별 층위: GPS 비콘 + 주변(나 포함) 참여 차가 최근 보고한 센서 종류
             "sources": ["gps_beacon"] + sorted({k for sv, (kinds, ts) in sensor_layers.items()
                                                if now - ts <= OBS_TTL_S and sv in live
@@ -962,7 +972,7 @@ def surroundings(vid):
 
 
 def store_info(vid):
-    """이모트 상점: 팩 목록과 이 차량의 보유·장착 상태."""
+    """이모트 스토어: 팩 목록과 이 차량의 보유·장착 상태."""
     with lock:
         owned = owned_packs(vid)
         equipped = (vehicles.get(vid) or {}).get("emote_pack") or "basic"

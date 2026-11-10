@@ -32,6 +32,8 @@ data class Surroundings(
     val observed: Int = 0,
     /** 지금 주변 인식에 쓰이는 식별 층위: "gps_beacon"(Tier 1) + 주변 참여 차가 보고한 "camera"·"radar"·"lidar"(Tier 2) · "uwb"(Tier 3) */
     val sources: Set<String> = setOf("gps_beacon"),
+    /** 화면 범위 밖이지만 연결된 차(1km 안)의 위치: (앞뒤 m, 좌우 m). 차는 그리지 않고 그 방향으로 흐려지는 점선만 그린다 */
+    val far: List<Pair<Double, Double>> = emptyList(),
 )
 
 /**
@@ -407,9 +409,16 @@ class SurroundView(context: Context) : View(context) {
         if (running) postInvalidateOnAnimation()
     }
 
-    /** 가깝다고 보는 주변 차: 앞 [NEAR_AHEAD_M]m · 뒤 [NEAR_BEHIND_M]m, 옆으로 두 차로 안의 참여 차량. */
-    private fun isNear(t: Track) = t.car.member &&
-        (t.along <= NEAR_AHEAD_M && t.along >= -NEAR_BEHIND_M && abs(t.cross) <= NEAR_SIDE_M)
+    /**
+     * 지나간 긴급차량이 보낸 감사 인사: 바로 앞차·뒤차가 아니라 그 긴급차량에서 내 차로 온다.
+     * 화면에 긴급차량(역할이 있는 차)이 보이면 가장 가까운 그 차에서, 이미 화면 밖으로 나갔으면 앞쪽 화면 끝에서 출발한다.
+     */
+    fun pulseFromEmergency(symbol: String) {
+        val d = data ?: return
+        val src = tracks.values.filter { it.car.member && it.car.role != null }.minByOrNull { abs(it.along) + abs(it.cross) }
+        pulses += Pulse(null, src?.car?.key, d.aheadM * 0.97, src?.cross ?: 0.0, false, symbol, TEAL, SystemClock.elapsedRealtime())
+        if (running) postInvalidateOnAnimation()
+    }
 
     /** 신호의 상대 쪽 끝점(화면 좌표). 대상이 사라졌으면 null. */
     private fun pulseFar(pu: Pulse): Pair<Float, Float>? {
@@ -423,31 +432,50 @@ class SurroundView(context: Context) : View(context) {
     }
 
     /**
-     * 평소의 연결 표시: 가까운 참여 차량 쪽으로 내 차 정중앙에서 회색 점선이 뻗지만, 내 차에서 멀어질수록 흐려져 사라진다
-     * ("내 주변에 있는 걸 알고 있다"는 표시일 뿐, 차마다 끝까지 이어 두면 교통량이 많을 때 화면이 그물처럼 된다).
+     * 평소의 연결 표시: 연결된 모든 참여 차량 쪽으로 내 차 정중앙에서 회색 점선이 뻗는다 ("너를 인지하고 있다").
+     * 차마다 끝까지 이어 두면 교통량이 많을 때 그물처럼 되므로, 선은 내 차에서 멀어질수록 흐려져 사라진다.
+     *  - 가까운 차(앞 60m · 뒤 40m 안): 진하고 짧다. 가상의 원([FADE_RADIUS]) 안에서만 보인다.
+     *  - 먼 차(화면 안의 먼 차, 화면 밖 1km 안의 차): 멀수록 옅어지되 더 길게, 그 차가 있는 쪽으로 뻗다가 사라진다
+     *    → 차는 안 보여도 "멀지만 연결돼 있다"는 것이 방향으로 보인다.
      * 신호가 오가는 동안에는 그 차와의 선만 [drawPulses]가 끝까지 이어진 점선으로 그린다.
      */
     private fun drawLinks(c: Canvas, now: Long) {
-        val near = tracks.values.filter { isNear(it) }
-        linkSince.keys.retainAll(near.map { it.car.key }.toSet())
-        if (near.isEmpty()) return
+        val d = data ?: return
+        val members = tracks.values.filter { it.car.member }
+        linkSince.keys.retainAll(members.map { it.car.key }.toSet())
+        if (members.isEmpty() && d.far.isEmpty()) return
         val me = geo(0.0, 0.0)
         val busy = pulses.mapNotNull { pu -> if (pu.ahead != null) tracks.values.firstOrNull { it.car.emoteTarget == (if (pu.ahead) "ahead" else "behind") }?.car?.key else pu.key }.toSet()
-        val radius = me.hw * FADE_RADIUS
-        linkPaint.strokeWidth = 2.6f
+        val nearR = me.hw * FADE_RADIUS
         linkPaint.pathEffect = dots
         linkPaint.color = Color.WHITE   // 페인트 알파가 셰이더에 곱해지므로 불투명으로 둔다
-        for (t in near) {
-            if (t.car.key in busy) continue
-            val since = linkSince.getOrPut(t.car.key) { now }
-            val a = min(1f, (now - since) / 600f)
-            val o = geo(t.cross, t.along)
-            // 내 차 가장자리에서 가장 진하고, 가상의 원(radius) 끝에서 완전히 사라진다
+
+        fun link(along: Double, cross: Double, appear: Float) {
+            val dist = kotlin.math.hypot(along, cross)
+            val near = along <= NEAR_AHEAD_M && along >= -NEAR_BEHIND_M && abs(cross) <= NEAR_SIDE_M
+            // 화면 밖의 차는 그 방향의 화면 끝을 향한다
+            val o = geo(cross.coerceIn(-SIDE_CLAMP_M, SIDE_CLAMP_M), along.coerceIn(-d.behindM * 0.97, d.aheadM * 0.97))
+            val len = kotlin.math.hypot(o.cx - me.cx, o.yc - me.yc)
+            if (len < 2f) return
+            // 거리별 진하기: 60m까지 1.0 → 200m 0.62 → 1km 0.34 (로그로 줄어든다)
+            val strength = if (near) 1f else (1f - 0.235f * kotlin.math.ln((dist / 60.0).coerceAtLeast(1.0)).toFloat()).coerceIn(0.3f, 1f)
+            // 사라지는 반경: 가까운 차는 가상의 원, 먼 차는 그 차 쪽으로 가는 길의 85%까지 (원보다 짧아지지는 않게)
+            val radius = if (near) nearR else max(nearR, len * 0.85f)
+            val a = appear * strength
+            linkPaint.strokeWidth = if (near) 2.6f else 2.2f
             linkPaint.shader = android.graphics.RadialGradient(me.cx, me.yc, radius,
-                intArrayOf(Color.argb((170 * a).toInt(), 148, 160, 176), Color.argb((120 * a).toInt(), 148, 160, 176), Color.argb(0, 148, 160, 176)),
-                floatArrayOf(0f, 0.35f, 1f), android.graphics.Shader.TileMode.CLAMP)
+                intArrayOf(Color.argb((170 * a).toInt(), 148, 160, 176), Color.argb((115 * a).toInt(), 148, 160, 176),
+                    Color.argb((45 * a).toInt(), 148, 160, 176), Color.argb(0, 148, 160, 176)),
+                floatArrayOf(0f, 0.3f, 0.7f, 1f), android.graphics.Shader.TileMode.CLAMP)
             c.drawLine(me.cx, me.yc, o.cx, o.yc, linkPaint)
         }
+
+        for (t in members) {
+            if (t.car.key in busy) continue
+            val since = linkSince.getOrPut(t.car.key) { now }
+            link(t.along, t.cross, min(1f, (now - since) / 600f))
+        }
+        for ((along, cross) in d.far) link(along, cross, 1f)
         linkPaint.shader = null
         linkPaint.pathEffect = null
     }
@@ -551,6 +579,7 @@ class SurroundView(context: Context) : View(context) {
         private const val NEAR_M = 12.0
         private const val FADE_RADIUS = 6.5f      // 평소 연결 표시가 사라지는 가상의 원: 내 차 반폭의 몇 배
         private val TEAL = Color.rgb(20, 184, 166)
+        private const val SIDE_CLAMP_M = 14.0   // 화면 밖 옆쪽 차를 향한 선이 도로 그림을 벗어나 눕지 않게
         private const val NEAR_AHEAD_M = 60.0
         private const val NEAR_BEHIND_M = 40.0
         private const val NEAR_SIDE_M = 8.0      // 옆으로 두 차로
