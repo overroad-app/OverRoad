@@ -4,12 +4,12 @@
 01_hard_brake_feedback 9
 02_secondary_accident 9
 03_weather 8
-05_ev_charging 8
-06_emergency 6
+05_ev_charging 9
+06_emergency 7
 07_lane_change 7
 08_consent_emote 6
 09_surround 3
 10_surround_drive 2
-11_emote_store 2
+11_emote_store 4
 12_quick_charge 1
 13_layers 1

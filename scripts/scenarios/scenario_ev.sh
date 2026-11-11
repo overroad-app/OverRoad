@@ -54,7 +54,8 @@ sleep 4
 tapdesc() {  # tapdesc <기기> <content-desc> — 같은 글자가 여러 개일 때 설명으로 찾아 누른다
   $ADB -s $1 shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
   read x1 y1 x2 y2 <<< "$($ADB -s $1 exec-out cat /sdcard/ui.xml | grep -oE "content-desc=\"$2\"[^>]*bounds=\"[^\"]+\"" | head -1 | grep -oE 'bounds="[^"]+"' | grep -oE '[0-9]+' | tr '\n' ' ')"
-  $ADB -s $1 shell input tap $(( (x1+x2)/2 )) $(( (y1+y2)/2 ))
+  local x=$(( (x1+x2)/2 )) y=$(( (y1+y2)/2 ))
+  $ADB -s $1 shell input swipe $x $y $x $y 180   # 0.18초 누른다
 }
 M="bash $S/mark.sh"
 # 경로를 잡으면 내비가 앞으로 나온다. 출발 전 OverRoad를 열면 이모트 바 위에 충전 여정 링(작은 창)
@@ -78,7 +79,7 @@ sleep 5; $M out
 $ADB -s emulator-5554 exec-out screencap -p > "$SHOT/ev7_b_drive_bar.png"
 echo "--- 3) C: 완료 알림이 사라진 뒤 별 5개 별점 → ★4"
 bash $S/wait_log.sh emulator-5556 "충전 완료" 5; sleep 1.5
-$M in -0.3; sleep 1; tapdesc emulator-5556 "별 4개"; sleep 2; $M out
+$M in -0.3; sleep 1; tapdesc emulator-5556 "별 4개"; sleep 2.6; $M out   # rev9: 별이 차례로 튀어 오르는 효과까지 담는다
 
 echo "== server"; tail -n +$((N+1)) $SL | grep -E "\[charg|\[rating\]" | head -12
 echo "== B"; $ADB -s emulator-5554 logcat -d | grep -E "충전 예측" | sed 's/.*HyperConnect: //' | tail -3

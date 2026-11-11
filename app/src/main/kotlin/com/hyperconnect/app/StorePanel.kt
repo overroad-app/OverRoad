@@ -7,6 +7,7 @@ import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -68,6 +69,15 @@ class StorePanel(
         render()
     }
 
+    /** 장착을 누른 즉시 그 카드를 '장착 중'으로 바꾸고 한 번 튀게 한다 (서버 응답을 기다리지 않는다). */
+    fun markEquipped(id: String) {
+        pulse = id
+        info = info.copy(equipped = id)
+        render()
+    }
+
+    private var pulse: String? = null
+
     private fun render() {
         val ctx = view.context
         equippedChip.text = "장착 중 · ${EmotePacks.of(info.equipped).name}"
@@ -106,9 +116,20 @@ class StorePanel(
 
     private fun card(ctx: Context, p: EmotePack): View = LinearLayout(ctx).apply {
         orientation = LinearLayout.VERTICAL
-        background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = 22f; setStroke(2, Color.rgb(226, 232, 240)) }
+        // 장착 중인 팩은 굵은 청록 테두리와 옅은 바탕으로 한눈에 구분한다
+        val equipped = p.id == info.equipped
+        background = GradientDrawable().apply {
+            setColor(if (equipped) Color.rgb(236, 253, 245) else Color.WHITE)
+            cornerRadius = 22f
+            setStroke(if (equipped) 7 else 2, if (equipped) EQUIPPED else Color.rgb(226, 232, 240))
+        }
         setPadding(18, 18, 18, 18)
         val owned = p.id in info.owned
+        if (p.id == pulse) {
+            pulse = null
+            scaleX = 0.9f; scaleY = 0.9f
+            animate().scaleX(1f).scaleY(1f).setDuration(480).setInterpolator(OvershootInterpolator(3.5f)).start()
+        }
         // 팩 색 견본 + 조각
         addView(FrameLayout(ctx).apply {
             background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(p.colorTop, p.colorBottom)).apply { cornerRadius = 14f }
@@ -136,7 +157,9 @@ class StorePanel(
                 p.unlock != null -> Triple("잠김", false) { onLocked(p.unlock) }
                 else -> Triple("구매", true) { onBuy(p.id) }
             }
-            addView(button(ctx, label, primary, action), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(button(ctx, label, primary, action).apply {
+                if (equipped) { background = round(EQUIPPED, 16f); setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         })
     }
 
@@ -154,6 +177,8 @@ class StorePanel(
         setTextColor(color)
         if (bold) typeface = Typeface.DEFAULT_BOLD
     }
+
+    private val EQUIPPED = Color.rgb(13, 148, 136)
 
     private fun round(color: Int, r: Float) = GradientDrawable().apply { setColor(color); cornerRadius = r }
     private fun stroke(color: Int, r: Float) = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = r; setStroke(2, color) }

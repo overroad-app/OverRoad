@@ -883,12 +883,27 @@ class MainActivity : Activity() {
 
     private fun answerRating(stars: Int) {
         val d = pendingRating ?: return
-        ratingStars.forEachIndexed { i, v -> v.setTextColor(if (i < stars) TripView.STAR else TripView.STAR_EMPTY) }
+        // 누른 별까지 왼쪽부터 차례로 채워지며 튀어 오른다 (눌렀다는 것이 보이게)
+        ratingStars.forEachIndexed { i, v ->
+            v.setTextColor(if (i < stars) TripView.STAR else TripView.STAR_EMPTY)
+            if (i < stars) {
+                v.animate().cancel()
+                v.scaleX = 0.5f; v.scaleY = 0.5f
+                v.animate().scaleX(1f).scaleY(1f).setStartDelay(i * 80L).setDuration(420).setInterpolator(OvershootInterpolator(5f)).start()
+            }
+        }
+        ratingBar.background = rounded(Color.rgb(254, 249, 195), 40f)
+        (ratingBar.getChildAt(0) as? TextView)?.text = "★ ${stars}점 · 고마워요!"
         client?.sendRating(d.stationId, stars)
         Log.i(TAG, "별점 보냄: ${d.station} ★$stars")
         update("마지막 별점", "${d.station} ★$stars")
         pendingRating = null
-        ui.postDelayed({ ratingBar.visibility = View.GONE }, 900)  // 채워진 별을 잠깐 보여 준 뒤 닫는다
+        ui.postDelayed({   // 채워진 별을 잠깐 보여 준 뒤 닫고, 다음에 물을 때를 위해 처음 모습으로 되돌린다
+            ratingBar.visibility = View.GONE
+            ratingBar.background = rounded(Color.argb(245, 255, 255, 255), 40f)
+            (ratingBar.getChildAt(0) as? TextView)?.text = "이 충전소 어땠나요?"
+            ratingStars.forEach { it.setTextColor(TripView.STAR_EMPTY) }
+        }, 1800)
         chargingView.text = "🔌  ${d.station} ★$stars 고마워요\n다음 운전자의 충전소 선택에 쓰여요"
         ui.removeCallbacks(hideCharging)
         chargingView.visibility = View.VISIBLE
@@ -1787,6 +1802,7 @@ class MainActivity : Activity() {
             onPreview = { id -> playSound(id, "thanks") },
             onEquip = { id ->
                 prefs.emotePack = id
+                store.markEquipped(id)   // 누른 즉시 테두리로 표시 (서버 확인은 아래에서 다시 읽는다)
                 paintEmoteButtons()
                 playSound(id, "thanks")
                 Log.i(TAG, "이모트 팩 장착: ${EmotePacks.of(id).name}")

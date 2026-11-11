@@ -13,7 +13,7 @@ T="bash $S/tap.sh emulator-5554"
 M="bash $S/mark.sh"
 
 bash $S/stop_fleet.sh
-C_GAP=60 bash $S/launch_bc.sh --es emote_pack basic --ez driving_view false
+C_GAP=15 bash $S/launch_bc.sh --es emote_pack basic --ez driving_view false
 for p in 8088 8089; do python3 -I $HC/scripts/vc.py --port $p stop >/dev/null; done   # 신호 대기 (D, 0km/h)
 $ADB -s emulator-5556 shell am start -n com.hyperconnect.app/.MainActivity >/dev/null 2>&1
 $ADB -s emulator-5554 shell am start -n com.hyperconnect.app/.MainActivity >/dev/null 2>&1; sleep 2
@@ -34,7 +34,10 @@ $T "뒤차" last; $M in -0.4; sleep 3.5; $M out   # 👍 고마워요 ▼ 뒤차
 $ADB -s emulator-5556 logcat -d | grep "이모트 수신" | tail -1 | sed 's/.*HyperConnect: //'
 echo "--- 3) 구급차 통과 → 긴급차량 감사"
 python3 -I $HC/scripts/fleet.py run --anchor B AMB:1:-200:60:role=ambulance > "$SHOT/fleet.log" 2>&1 &
-bash $S/wait_log.sh emulator-5556 "길을 열어 줘서" 60; $M in -1; sleep 4; $M out
+# rev3: 구급차는 뒤에 있는 C를 먼저 지나가고 B를 나중에 지나간다. C 기준 4초만 남기면 B의 감사 카드가 잘렸다
+#   → C가 받은 순간부터 B가 받고 4초 뒤까지 남기고, 두 차 간격도 15m로 좁힌다
+bash $S/wait_log.sh emulator-5556 "길을 열어 줘서" 60; $M in -1
+bash $S/wait_log.sh emulator-5554 "길을 열어 줘서" 30; sleep 4; $M out
 $ADB -s emulator-5556 exec-out screencap -p > "$SHOT/store_c_emergency.png"
 $ADB -s emulator-5556 logcat -d | grep "이모트 수신" | tail -2 | sed 's/.*HyperConnect: //'
 $T "접기"
