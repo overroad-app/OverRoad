@@ -6,6 +6,7 @@ Chrome 헤드리스로 PDF를 만든다. (이 컴퓨터에는 pandoc·LibreOffic
   python3 -I docs/build_report_pdf.py   → docs/OverRoad_통합보고서.pdf
 """
 import html
+import os
 import re
 import subprocess
 import sys
@@ -14,7 +15,9 @@ from pathlib import Path
 
 DOCS = Path(__file__).resolve().parent
 OUT_HTML = DOCS / "_report.html"
-OUT_PDF = DOCS / "OverRoad_통합보고서.pdf"
+# PAIRED=1: 요약형 접수양식(content_diet.py)과 짝을 이루는 상세판. 2부가 "기획서 상세판"이 되고, 양식 문항 ↔ 보고서 부 안내를 넣는다
+PAIRED = os.environ.get("PAIRED") == "1"
+OUT_PDF = DOCS / ("OverRoad_통합보고서_상세판.pdf" if PAIRED else "OverRoad_통합보고서.pdf")
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
@@ -138,7 +141,7 @@ def proposal_html():
 
 PARTS = [
     ("1부. OverRoad가 지향하는 것 · Tier별 기능 구분", lambda: md_to_html((DOCS / "philosophy.md").read_text(), 1)),
-    ("2부. 기획서 (접수양식 02장 · 앱 프로젝트 소개)", proposal_html),
+    ("2부. 기획서 상세판 (접수양식 각 문항의 자세한 설명)" if PAIRED else "2부. 기획서 (접수양식 02장 · 앱 프로젝트 소개)", proposal_html),
     ("3부. 기술 리포트 — 판별 로직", lambda: md_to_html((DOCS / "technical_report.md").read_text(), 1)),
     ("4부. 기능별 개선 기록 · 기존 서비스 비교", lambda: md_to_html((DOCS / "feature_revisions.md").read_text(), 1)),
     ("5부. 급제동 경고 지연시간 실측", lambda: md_to_html((DOCS / "latency.md").read_text(), 1)),
@@ -174,12 +177,23 @@ hr { border: none; border-top: 1px dashed #c9d3e0; margin: 18px 0; }
 """
 
 
+GUIDE = """<h2>이 보고서를 읽는 법</h2>
+<p>접수양식에는 의도와 설계 철학, 최종 비전을 중심으로 요약해 적었고, 자세한 설명과 근거는 이 보고서에 모았습니다. 접수양식의 각 문항에 해당하는 내용은 아래에서 찾을 수 있습니다.</p>
+<table><thead><tr><th class="nw">접수양식 문항</th><th>자세한 내용이 있는 곳</th></tr></thead><tbody>
+<tr><td class="nw">2. 기획 배경</td><td>2부 2번 (운전자가 겪는 불편한 순간, 점유율 수치와 기준)</td></tr>
+<tr><td class="nw">3. 주요 기능·차량 특화</td><td>2부 3번 (여덟 기능의 동작 조건, 주의 분산 설계) · 3부 (판별 로직과 수치) · 4부 (기능별 개선 기록, 기존 서비스 비교)</td></tr>
+<tr><td class="nw">4. 사용 시나리오</td><td>2부 4번 (장면별 화면 문구)</td></tr>
+<tr><td class="nw">5. 개발 계획</td><td>2부 5번 (SDK별 사용 내용, 가이드 준수 항목) · 5부 (지연시간 실측)</td></tr>
+<tr><td class="nw">6. 기대효과·발전 가능성</td><td>2부 6번 (수익 모델, Tier별 형태와 기능, 인지하고 있는 과제) · 6부 (MAU·Retention Rate 산정) · 1부 (지향점, Tier별 기능과 진입 조건, 구현하지 못한 것과 그 이유)</td></tr>
+</tbody></table>"""
+
+
 def main():
     body = [f"""<div class="cover"><h1>OverRoad</h1>
 <div class="sub">점유율 기반 차량 간 연결망 · 보편적인 모빌리티 경험</div>
 <div class="meta">현대자동차그룹 차량용 앱 개발 공모전 출품작 통합보고서<br>
 기획서 · 철학과 Tier별 기능 · 기술 리포트 · 개선 기록 · 실측 · MAU 산정<br>작성 {time.strftime('%Y-%m-%d')}</div></div>""",
-            "<div class='toc'><h2>목차</h2><ol>" + "".join(f"<li>{t}</li>" for t, _ in PARTS) + "</ol></div>"]
+            "<div class='toc'><h2>목차</h2><ol>" + "".join(f"<li>{t}</li>" for t, _ in PARTS) + "</ol>" + (GUIDE if PAIRED else "") + "</div>"]
     for title, make in PARTS:
         body.append(f"<h1 class='part'>{title}</h1>")
         body.append(make())
