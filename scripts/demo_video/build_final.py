@@ -159,23 +159,32 @@ def panel(idx, title, note, text, extra=None):
     while d.textlength(title, font=F(size, True)) > PANEL_W - 2 * x:
         size -= 2
     d.text((x, 190), title, font=F(size, True), fill=INK)
+    cap_y = 300 if extra else 400          # 화면 설명 상자가 있는 장면은 자막을 위로 올린다
+    cap_bottom = cap_y
     if text:
         size = 38
         while max(d.textlength(l, font=F(size)) for l in text.split("\n")) > PANEL_W - 2 * x:
             size -= 1
-        d.multiline_text((x, 400), text, font=F(size), fill=INK, spacing=22)
+        d.multiline_text((x, cap_y), text, font=F(size), fill=INK, spacing=22)
     if extra:
-        blocks = [(h, wrap(d, b, F(25), PANEL_W - 2 * x - 40)) for h, b in extra]
-        hgt = sum(42 + 36 * len(ls) + 16 for _, ls in blocks) + 24
-        y = H - 150 - hgt
+        cap_bottom = cap_y + 2 * (38 + 22)   # 자막은 두 줄까지: 자막이 없을 때도 같은 자리를 비워 상자가 움직이지 않게 한다
+        fs = 25
+        while True:                          # 상자가 자막과 겹치지 않을 때까지 글자를 줄인다
+            lh = fs + 11
+            blocks = [(h, wrap(d, b, F(fs), PANEL_W - 2 * x - 40)) for h, b in extra]
+            hgt = sum(fs + 17 + lh * len(ls) + 16 for _, ls in blocks) + 24
+            y = H - 150 - hgt
+            if y >= cap_bottom + 24 or fs <= 19:
+                break
+            fs -= 1
         d.rounded_rectangle((x, y, PANEL_W - x, y + hgt), radius=16, fill=(30, 41, 59))
         y += 20
         for h, ls in blocks:
-            d.text((x + 20, y), h, font=F(26, True), fill=TEAL)
-            y += 42
+            d.text((x + 20, y), h, font=F(fs + 1, True), fill=TEAL)
+            y += fs + 17
             for l in ls:
-                d.text((x + 20, y), l, font=F(25), fill=(203, 213, 225))
-                y += 36
+                d.text((x + 20, y), l, font=F(fs), fill=(203, 213, 225))
+                y += lh
             y += 16
     d.line((x, H - 128, PANEL_W - x, H - 128), fill=LINE, width=2)
     d.text((x, H - 100), note, font=F(25), fill=QUIET)
