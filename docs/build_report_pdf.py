@@ -118,7 +118,11 @@ def proposal_html():
     titles = ["1. 앱 소개" if PAIRED else "1. 앱 한 줄 소개", "2. 기획 배경", "3. 앱 주요 기능 및 차량 특화 요소", "4. 주요 사용 시나리오",
               "5. 개발 계획", "6. 기대효과 및 발전 가능성"]
     out = []
-    for title, lines in zip(titles, ns["SECTIONS"]):
+    pairs = list(zip(titles, ns["SECTIONS"]))
+    if PAIRED:
+        pairs = pairs[1:]   # 앱 소개는 1부 "OverRoad 소개"에 합쳤다 (같은 글이 두 번 나오지 않게)
+        out.append("<p>앱 소개는 1부의 'OverRoad 소개'에 있습니다. 아래 번호는 접수양식의 문항 번호와 같습니다.</p>")
+    for title, lines in pairs:
         out.append(f"<h2>{title}</h2>")
         bullets = []
         def flush():
@@ -141,7 +145,7 @@ def proposal_html():
 
 PARTS = [
     ("1부. OverRoad가 지향하는 것 · Tier별 기능 구분", lambda: md_to_html((DOCS / "philosophy.md").read_text(), 1)),
-    ("2부. 기획서 상세판 (접수양식 각 문항의 자세한 설명)" if PAIRED else "2부. 기획서 (접수양식 02장 · 앱 프로젝트 소개)", proposal_html),
+    ("2부. 기획서 상세판 (접수양식 2~6번 문항의 자세한 설명)" if PAIRED else "2부. 기획서 (접수양식 02장 · 앱 프로젝트 소개)", proposal_html),
     ("3부. 기술 리포트 — 판별 로직", lambda: md_to_html((DOCS / "technical_report.md").read_text(), 1)),
     ("4부. 기능별 개선 기록 · 기존 서비스 비교", lambda: md_to_html((DOCS / "feature_revisions.md").read_text(), 1)),
     ("5부. 급제동 경고 지연시간 실측", lambda: md_to_html((DOCS / "latency.md").read_text(), 1)),
