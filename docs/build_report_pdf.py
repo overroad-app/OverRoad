@@ -62,8 +62,14 @@ def md_to_html(md, shift=0):
                     rows.append(cells)
                 i += 1
             head, *body = rows
-            out.append("<table><thead><tr>" + "".join(f"<th>{inline(c)}</th>" for c in head) + "</tr></thead><tbody>"
-                       + "".join("<tr>" + "".join(f"<td>{inline(c)}</td>" for c in r) + "</tr>" for r in body)
+            # 줄맞춤: 칸 내용이 모두 짧은 열은 줄바꿈하지 않는다 (좁은 열에서 낱말이 쪼개지는 것을 막는다)
+            plain = lambda c: re.sub(r"[`*]", "", c)
+            ncol = len(head)
+            body = [(r + [""] * ncol)[:ncol] for r in body]
+            nw = [max(len(plain(r[k])) for r in [head] + body) <= 12 for k in range(ncol)]
+            cls = lambda k: ' class="nw"' if nw[k] else ""
+            out.append("<table><thead><tr>" + "".join(f"<th{cls(k)}>{inline(c)}</th>" for k, c in enumerate(head)) + "</tr></thead><tbody>"
+                       + "".join("<tr>" + "".join(f"<td{cls(k)}>{inline(c)}</td>" for k, c in enumerate(r)) + "</tr>" for r in body)
                        + "</tbody></table>")
             continue
         if line.startswith(">"):
@@ -149,7 +155,10 @@ h4, h5, h6 { font-size: 11pt; color: #24476e; }
 table { border-collapse: collapse; width: 100%; margin: 8px 0 12px; font-size: 9.5pt; page-break-inside: auto; }
 tr { page-break-inside: avoid; }
 th, td { border: 1px solid #c9d3e0; padding: 4px 6px; vertical-align: top; text-align: left; }
-th { background: #eef2f7; }
+th { background: #eef2f7; vertical-align: middle; }
+table { word-break: keep-all; overflow-wrap: break-word; }
+.nw { white-space: nowrap; }
+td code { word-break: normal; overflow-wrap: anywhere; }
 code { font-family: Menlo, monospace; font-size: 9pt; background: #f2f4f7; padding: 0 3px; border-radius: 3px; }
 pre { font-family: Menlo, monospace; font-size: 8.5pt; background: #f5f7fa; border: 1px solid #dde3ea; padding: 8px; white-space: pre-wrap; }
 blockquote { border-left: 4px solid #9db3cc; margin: 8px 0; padding: 4px 12px; background: #f6f8fb; }
@@ -169,8 +178,7 @@ def main():
     body = [f"""<div class="cover"><h1>OverRoad</h1>
 <div class="sub">점유율 기반 차량 간 연결망 · 보편적인 모빌리티 경험</div>
 <div class="meta">현대자동차그룹 차량용 앱 개발 공모전 출품작 통합보고서<br>
-기획서 · 철학과 Tier별 기능 · 기술 리포트 · 개선 기록 · 실측 · MAU 산정<br>작성 {time.strftime('%Y-%m-%d')}<br>
-이름 OverRoad(오버로드): 도로 위(Over the Road)에서 모든 차를 내려다보며 잇는 연결망</div></div>""",
+기획서 · 철학과 Tier별 기능 · 기술 리포트 · 개선 기록 · 실측 · MAU 산정<br>작성 {time.strftime('%Y-%m-%d')}</div></div>""",
             "<div class='toc'><h2>목차</h2><ol>" + "".join(f"<li>{t}</li>" for t, _ in PARTS) + "</ol></div>"]
     for title, make in PARTS:
         body.append(f"<h1 class='part'>{title}</h1>")
