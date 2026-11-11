@@ -45,6 +45,7 @@ data class ChargeDone(val station: String, val stationId: String, val minutes: I
 data class EmergencyApproach(
     val id: String, val role: String, val label: String, val symbol: String,
     val distanceM: Int, val sameLane: Boolean, val passed: Boolean,
+    val laneUnknown: Boolean = false,   // 차로를 모름 (실차 Tier 1): 비켜 달라거나 유지하라고 단정하지 않는다
 )
 
 /** 충전소 지도의 핀: 별점·혼잡과, 이 차량이 그곳으로 갈 때의 대기·완료 시각. */
@@ -416,7 +417,7 @@ class HyperConnectClient(
                             "emergency" -> onEmergency(EmergencyApproach(
                                 id = o.optString("id", o.optString("role")), role = o.optString("role"),
                                 label = o.getString("label"), symbol = o.getString("symbol"),
-                                distanceM = o.getInt("distance_m"), sameLane = o.optString("lane") == "same",
+                                distanceM = o.getInt("distance_m"), sameLane = o.optString("lane") == "same", laneUnknown = o.optString("lane", "unknown") == "unknown",
                                 passed = o.optString("status") == "passed",
                             ))
                             else -> onWarning(parse(o))

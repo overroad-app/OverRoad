@@ -944,7 +944,12 @@ class MainActivity : Activity() {
             return@runOnUiThread
         }
         val s = roleStyle(near.role)
-        val action = if (near.sameLane) "오른쪽으로 비켜 길을 열어 주세요" else "차로를 유지하세요 · 끼어들지 마세요"
+        // 차로를 모르면(실차 Tier 1) 비키라거나 유지하라고 단정하지 않고, 준비만 시킨다
+        val action = when {
+            near.laneUnknown -> "길을 비킬 준비를 하세요"
+            near.sameLane -> "오른쪽으로 비켜 길을 열어 주세요"
+            else -> "차로를 유지하세요 · 끼어들지 마세요"
+        }
         styleEmergency(s, s.title, "뒤 ${near.distanceM}m · $action")
         refreshDetails()
         ui.postDelayed(hideEmergency, 6000L)
@@ -954,7 +959,7 @@ class MainActivity : Activity() {
         if (announced.add(near.id)) {
             Log.i(TAG, "긴급차량: ${s.title.trim()} / 뒤 ${near.distanceM}m / $action")
             busyUntilMs = now + 6000
-            speakAlert("뒤에서 ${near.label}가 다가옵니다. ${if (near.sameLane) "오른쪽으로 비켜 주세요" else "차로를 유지하세요"}", s.tone)
+            speakAlert("뒤에서 ${near.label}가 다가옵니다. ${when { near.laneUnknown -> "길을 비킬 준비를 하세요"; near.sameLane -> "오른쪽으로 비켜 주세요"; else -> "차로를 유지하세요" }}", s.tone)
         }
     }
 
