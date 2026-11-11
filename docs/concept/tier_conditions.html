@@ -49,44 +49,61 @@
   .trunk b{font-weight:800;margin-right:10px}
   .trunk span{float:right;font-size:15.5px;opacity:.9;margin-top:1px}
   .foot{bottom:16px;font-size:17px}
+  .grid{grid-template-columns:200px 1.05fr 1fr 1fr 1fr 1fr;gap:0 10px;padding:12px 14px 0}
+  .cell{font-size:14.6px;line-height:1.42;padding:11px 12px;min-height:172px}
+  .cell ul{padding-left:15px}
+  .head{font-size:15.5px;padding:0 12px 8px}
+  .head small{font-size:13px}
+  .tier b{font-size:23px}
+  .tier span{font-size:15px}
+  .tier em{font-size:12.5px}
+  .ui{background:rgba(13,148,136,.07)!important}
+  .ui strong{display:block;font-size:16.5px;font-weight:800;color:#0f766e;margin-bottom:5px}
+  .r1 .ui{background:#99f6e4!important}
+  .sub{font-size:17px}
 </style></head><body><div class="wrap">
-  <h1>OverRoad를 이루는 네 층위 — 층마다 무엇이 열려야 하는가</h1>
+  <h1>OverRoad를 이루는 네 층위 — 층마다 어떤 모습이고, 무엇이 열려야 하는가</h1>
   <div class="sub">OverRoad가 지향하는 것은 네 층위 전체입니다. 그중 지금 열려 있는 조건만으로 구현할 수 있는 층이 Tier 1이고, 이번에 보여 드리는 것이 이 층입니다.</div>
 
   <div class="box"><div class="boxhead"><b>OverRoad</b> · 도로 위 차들의 초연결 <span>하나의 연결망, 네 층위</span></div>
   <div class="grid">
     <div class="head"></div>
-    <div class="head">이 층에서 되는 것</div>
+    <div class="head">운전자가 만나는 형태<small>인터페이스</small></div>
+    <div class="head">이 층에서 되는 것<small>기능</small></div>
     <div class="head">필요한 권한·데이터<small>현대차그룹이 열어 주면 되는 것</small></div>
     <div class="head">필요한 하드웨어<small>차에 달려 있어야 하는 것</small></div>
     <div class="head">필요한 인프라·제도<small>차 바깥에서 갖춰져야 하는 것</small></div>
 
-    <div class="tier r4"><b>Tier 4</b><span>협력 자율주행<br>최종 지향점</span><em>비전</em></div>
+    <div class="tier r4"><b>Tier 4</b><span>협력 자율주행<br>OS 내장 · 최종 지향점</span><em>비전</em></div>
     <div class="row r4">
+      <div class="cell ui"><strong>OS에 내장</strong>앱이 아니라 차의 기본 기능. 계기판과 HUD, 주행 시스템이 같은 연결망을 함께 씁니다</div>
       <div class="cell"><ul><li>합성 시야: 안개·야간에도 맑은 날 같은 주행 화면</li><li>차량 군집 단위의 협력 주행</li><li>자율주행을 이루는 한 축</li></ul></div>
       <div class="cell"><ul><li>자율주행 시스템과의 통합 (연결망을 보조 입력으로)</li><li>OS에 내재된 서비스로 편입</li></ul></div>
       <div class="cell"><ul><li>자율주행 센서 구성</li><li>다른 차의 정보까지 처리할 차량 내 컴퓨팅</li></ul></div>
       <div class="cell"><ul><li>정밀 3D 지도</li><li>도로변·클라우드 컴퓨팅</li><li>안전 인증과 책임 소재 기준</li></ul></div>
     </div>
 
-    <div class="tier r3"><b>Tier 3</b><span>차량 간 직접 통신<br>협력 주행의 시작</span><em>로드맵</em></div>
+    <div class="tier r3"><b>Tier 3</b><span>차량 간 직접 통신<br>내비게이션과 통합</span><em>로드맵</em></div>
     <div class="row r3">
+      <div class="cell ui"><strong>내비게이션과 통합된 앱</strong>길 안내 지도 위에 실제 주변 차와 경고가 함께 보이는 하나의 화면</div>
       <div class="cell"><ul><li>서버를 거치지 않는 차량 간 직접 통신</li><li>가려진 시야 공유, 협력 합류</li><li>신호 대기 차량의 협력 출발</li></ul></div>
-      <div class="cell"><ul><li>주행 시스템과의 연동</li><li>OS 전용 알림 영역</li></ul></div>
+      <div class="cell"><ul><li>내비게이션과의 통합, 주행 시스템 연동</li><li>OS 전용 알림 영역</li></ul></div>
       <div class="cell"><ul><li>C-V2X 직접 통신 모듈</li><li>UWB·BLE (초근접, 보행자·이륜차)</li></ul></div>
       <div class="cell"><ul><li>도로 인프라 연동 (C-ITS)</li><li>저지연 통신망</li><li>V2X 보안 인증 체계</li></ul></div>
     </div>
 
-    <div class="tier r2"><b>Tier 2</b><span>센서·데이터 제휴<br>내비게이션과 통합</span><em>로드맵 · 일부 구현</em></div>
+    <div class="tier r2"><b>Tier 2</b><span>센서·데이터 제휴<br>기본 탑재</span><em>로드맵 · 일부 구현</em></div>
     <div class="row r2">
-      <div class="cell"><ul><li>서로를 차로 단위로 식별</li><li>앱에 참여하지 않은 차까지 표시</li><li>내비 지도 위에 주변 차량과 위험 구간</li></ul></div>
-      <div class="cell"><ul><li>카메라·레이더·ADAS·조향각 신호</li><li>내비 지도 표시, 화면 상시 영역</li><li>스티어링 휠 버튼, 배터리·충전 곡선, 결제</li></ul></div>
+      <div class="cell ui"><strong>기본 탑재 앱 · 내비 위 어시스턴트</strong>출고 때부터 들어 있고, 내비 화면 위에 작게 떠서 경고·충전·인사를 알려 줍니다</div>
+      <div class="cell"><ul><li>서로를 차로 단위로 식별</li><li>앱에 참여하지 않은 차까지 표시</li><li>내비 지도에 사고·기상 구간 표시</li></ul></div>
+      <div class="cell"><ul><li>카메라·레이더·ADAS·조향각 신호</li><li>내비 위 상시 영역, 지도 표시</li><li>스티어링 휠 버튼, 배터리·충전 곡선, 결제</li></ul></div>
       <div class="cell"><ul><li>이미 달려 있는 카메라·레이더<br>(추가 장착 없음)</li><li>라이다는 장착 차량만</li></ul></div>
       <div class="cell"><ul><li>GNSS 보정·HD 맵</li><li>센서·지도 데이터 제휴</li></ul></div>
     </div>
 
     <div class="tier r1"><b>Tier 1</b><span>연결망과 여덟 가지 기능<br>이번 출품작</span><em>구현 · 에뮬레이터 동작</em></div>
     <div class="row r1">
+      <div class="cell ui"><strong>독립 앱</strong>App Market에서 설치해 따로 여는 앱. 주행 중에는 내비 뒤로 물러나고 경고는 OS 상단 알림으로</div>
       <div class="cell"><ul><li>급제동·2차 사고·기상·긴급차량 경고</li><li>차로 변경 의도 공유, 소리 이모트</li><li>EV 충전 예측, 연결이 보이는 화면</li></ul></div>
       <div class="cell"><ul><li>공개된 Pleos Connect SDK<br>(차량 신호 · 내비 정보 · 음성)</li><li>위치·인터넷 권한</li></ul></div>
       <div class="cell"><ul><li>추가 하드웨어 없음</li><li>지금 달리는 차 그대로</li></ul></div>
