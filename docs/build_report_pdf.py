@@ -190,7 +190,7 @@ GUIDE = """<h2>이 보고서를 읽는 법</h2>
 
 def main():
     body = [f"""<div class="cover"><h1>OverRoad</h1>
-<div class="sub">점유율 기반 차량 간 연결망 · 보편적인 모빌리티 경험</div>
+<div class="sub">도로 위 차들의 초연결 · 개체에서 군집으로</div>
 <div class="meta">현대자동차그룹 차량용 앱 개발 공모전 출품작 통합보고서<br>
 기획서 · 철학과 Tier별 기능 · 기술 리포트 · 개선 기록 · 실측 · MAU 산정<br>작성 {time.strftime('%Y-%m-%d')}</div></div>""",
             "<div class='toc'><h2>목차</h2><ol>" + "".join(f"<li>{t}</li>" for t, _ in PARTS) + "</ol>" + (GUIDE if PAIRED else "") + "</div>"]
