@@ -31,10 +31,12 @@ TAIL = 0.3                     # 내레이션이 끝난 뒤 앱 소리가 나오
 # 장면 뒤쪽의 변화 없는 구간을 잘라 낼 끝 시각(초). 화면 변화와 앱 소리가 끝난 뒤 1초쯤 남긴다
 CUT = {"01": 5.6, "02": 12.3, "03": 7.0, "07": 6.0, "08": 11.6, "09": 11.5, "10": 25.3, "12": 15.0, "11": 21.6, "13": 11.5}
 END_PAD = 0.15
+# 장면 앞쪽을 잘라 낼 시작 시각(초). 첫 화면을 멈춰 두므로, 기어를 막 넣어 계기판이 바뀌는 중인 첫 프레임을 피한다
+START = {"06": 0.2}
 
 # (장면 파일 앞 번호, 제목, 아래 설명, 자막 문장들, 소리 키움 dB)
 SCENES = [
-    ("01", "급제동 경고", "Pleos Connect 에뮬레이터 2대 · 실제 동작 화면",
+    ("01", "급제동 경고", "에뮬레이터 2대 · 실제 동작 화면 · 차로 값은 시연 입력",
      ["앞차가 급하게 브레이크를 밟으면,\n곧 그 자리에 닿을 뒤차에게만 바로 알립니다.",
       "브레이크부터 뒤차 화면까지,\n평균 0.64초입니다."], 0),
     ("02", "2차 사고 방지", "Pleos Connect 에뮬레이터 2대 · 실제 동작 화면",
@@ -43,12 +45,12 @@ SCENES = [
     ("03", "기상 위험", "Pleos Connect 에뮬레이터 2대 · 실제 동작 화면",
      ["차 한 대가 와이퍼를 켠 것으로는\n판단하지 않습니다.",
       "한 지역의 여러 차가 거의 동시에 켤 때만\n폭우 구간으로 확정하고, 뒤따르는 차에게 알립니다."], 0),
-    ("06", "긴급차량 길 터주기", "Pleos Connect 에뮬레이터 2대 · 실제 동작 화면",
+    ("06", "긴급차량 길 터주기", "에뮬레이터 2대 · 실제 동작 화면 · 차로 값은 시연 입력",
      ["구급차와 소방차, 경찰차가 다가오면\n사이렌이 들리기 전에 알려 줍니다.",
-      "같은 차로면 비켜 달라고,\n다른 차로면 그대로 가 달라고 안내합니다."], 20),   # rev7 녹화는 음량이 낮게 잡혀(최대 -23dB) 다른 장면 수준으로 키운다
-    ("07", "차로 변경 의도 공유", "Pleos Connect 에뮬레이터 2대 · 실제 동작 화면",
-     ["깜빡이를 켜면,\n옆 차로에서 다가오는 차에게만 알립니다.",
-      "들어가는 데 성공하면, 양보해 준 뒤차에게\n감사 인사가 자동으로 전해집니다."], 0),
+      "차로를 알 수 있게 되면, 같은 차로면 비켜 달라고,\n다른 차로면 그대로 가 달라고 안내합니다."], 20),   # rev7 녹화는 음량이 낮게 잡혀(최대 -23dB) 다른 장면 수준으로 키운다
+    ("07", "차로 변경 의도 공유", "에뮬레이터 2대 · 실제 동작 화면 · 차로 값은 시연 입력",
+     ["깜빡이를 켜면,\n옆에서 다가오는 차에게만 알립니다.",
+      "차로를 알 수 있게 되면, 들어가는 데 성공했을 때\n양보해 준 뒤차에게 감사 인사가 자동으로 전해집니다."], 0),
     ("08", "데이터 공유 동의 · 소리 이모트", "Pleos Connect 에뮬레이터 2대 · 실제 동작 화면",
      ["처음 켜면 무엇을 보내는지 알리고,\n동의한 뒤에만 연결됩니다.",
       "바로 앞차와 뒤차에게는 버튼 한 번으로\n고마움과 미안함을 소리로 전할 수 있습니다.",
@@ -84,11 +86,11 @@ EXTRA = {
 INTRO = ["지금까지 차는 저마다 혼자 보고,\n혼자 판단했습니다.",
          "OverRoad는 도로 위의 차들을 하나의 군집으로 잇는\n초연결 아키텍처입니다.",
          "국내 신차 네 대 중 세 대가\n현대차그룹 차량이기에 가능한 일입니다.",
-         "최종 지향점은, 이 연결망이\n자율주행을 이루는 한 축이 되는 것입니다.",
+         "최종 지향점은, 각 차가 혼자서도 완전히 달리되\n군집으로 모여 더 큰 힘을 내는, 군집 단위의 자율주행입니다.",
          "그중 지금의 차량 신호와 이동통신만으로 구현할 수 있는 것이\nTier 1이어서, 오늘은 이것을 보여 드립니다."]
 OUTRO = ["이 기능들은 도로 위 차들의 초연결에서\n자연스럽게 나왔습니다.",
-         "지금은 따로 여는 앱이지만, 내비게이션과 합쳐지고,\n마지막에는 자율주행과 하나가 됩니다.",
-         "그 첫 단계는 새 장비 없이,\n지금 달리는 차들만으로 시작할 수 있습니다."]
+         "지금은 따로 여는 앱이지만, 내비게이션 위에 뜨고, 내비게이션과 합쳐지고,\n마지막에는 차에 내장되어 자율주행과 하나가 됩니다.",
+         "한 대가 아니라 군집으로 달리는 자율주행,\n그 첫 단계는 새 장비 없이,\n지금 달리는 차들만으로 시작할 수 있습니다."]
 
 
 def run(*args, capture=False):
@@ -123,7 +125,9 @@ for i, (a, b) in enumerate(blocks):
     run("ffmpeg", "-v", "error", "-y", "-ss", f"{a2:.3f}", "-to", f"{b2:.3f}", "-i", NARR, "-af", "volume=3dB,alimiter=limit=0.95", "-ar", "48000", "-ac", "2", f)
     inner = [(s + e) / 2 - a2 for s, e in sil if a < s and e < b and e - s < 1.0]
     narr.append((f, b2 - a2, [0.0] + inner))
-captions = [INTRO] + [s[3] for s in SCENES] + [OUTRO]
+INTRO_SEG = INTRO + [INTRO[4]]     # 다섯째 문장은 쉼표에서 한 번 쉰다 (자막은 그대로)
+OUTRO_SEG = OUTRO + [OUTRO[2]]     # 끝의 "오버로드입니다"
+captions = [INTRO_SEG] + [s[3] for s in SCENES] + [OUTRO_SEG]
 for i, (n, c) in enumerate(zip(narr, captions)):
     assert len(n[2]) == len(c), f"묶음 {i}: 쉼으로 나눈 문장 {len(n[2])}개, 자막 {len(c)}개"
 print("내레이션 묶음 길이:", " ".join(f"{n[1]:.1f}" for n in narr))
@@ -231,7 +235,7 @@ parts, report = [], []
 # 시작: 제목(문장 1~3) → 네 층위 표(문장 4~5)
 f, d, t = narr[0]
 frames = [(title_card(""), 0.0)] + [(title_card(INTRO[k]), LEAD + t[k]) for k in range(3)] \
-    + [(tier_card(INTRO[k]), LEAD + t[k]) for k in (3, 4)]
+    + [(tier_card(INTRO[k]), LEAD + t[k]) for k in (3, 4)]   # t[5]는 다섯째 문장 안의 쉼이라 자막을 바꾸지 않는다
 p = WORK / "part00.mp4"
 report.append(("시작", stills_video(frames, (f, d), p, 0.5)))
 parts.append(p)
@@ -239,7 +243,8 @@ parts.append(p)
 # 장면
 for i, (num, title, note, caps, gain) in enumerate(SCENES, 1):
     clip = next(SRC.glob(f"{num}_*.mp4"))
-    cd = min(duration(clip), CUT.get(num, 1e9))
+    st = START.get(num, 0.0)
+    cd = min(duration(clip), CUT.get(num, 1e9)) - st
     has_audio = bool(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(clip)],
                                     capture_output=True, text=True).stdout.strip())
     # 앱 소리가 처음 나는 시각 (소리 없는 장면은 끝까지)
@@ -257,7 +262,7 @@ for i, (num, title, note, caps, gain) in enumerate(SCENES, 1):
     ex = EXTRA.get(num)
     imgs = [(panel(i, title, note, "", ex), 0.0)] + [(panel(i, title, note, caps[k], ex), start_n + t[k]) for k in range(len(caps))] \
         + [(panel(i, title, note, "", ex), start_n + nd + 0.6)]
-    args, filt = ["ffmpeg", "-v", "error", "-y", "-t", f"{cd:.3f}", "-i", clip], []
+    args, filt = ["ffmpeg", "-v", "error", "-y", "-ss", f"{st:.3f}", "-t", f"{cd:.3f}", "-i", clip], []
     for k, (img, _) in enumerate(imgs):
         pth = WORK / f"s{i:02d}_{k}.png"
         img.save(pth)
