@@ -153,7 +153,8 @@ PARTS = [
 ]
 
 CSS = """
-@page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+@page { size: A4; margin: 18mm 16mm 18mm 16mm; @bottom-center { content: counter(page); font-size: 9pt; color: #64748b; } }
+@page :first { @bottom-center { content: none; } }
 body { font-family: 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; font-size: 10.5pt; line-height: 1.6; color: #1d2330; }
 h1.part { font-size: 20pt; color: #16324F; border-bottom: 3px solid #16324F; padding-bottom: 6px; page-break-before: always; margin-top: 0; }
 h2 { font-size: 15pt; color: #16324F; margin-top: 22px; border-bottom: 1px solid #c9d3e0; padding-bottom: 3px; }
@@ -184,11 +185,12 @@ hr { border: none; border-top: 1px dashed #c9d3e0; margin: 18px 0; }
 GUIDE = """<h2>이 보고서를 읽는 법</h2>
 <p>접수양식에는 의도와 설계 철학, 최종 비전을 중심으로 요약해 적었고, 자세한 설명과 근거는 이 보고서에 모았습니다. 접수양식의 각 문항에 해당하는 내용은 아래에서 찾을 수 있습니다.</p>
 <table><thead><tr><th class="nw">접수양식 문항</th><th>자세한 내용이 있는 곳</th></tr></thead><tbody>
+<tr><td class="nw">1. 앱 소개</td><td>1부 맨 앞의 'OverRoad 소개'와 네 층위 그림, '최종 비전'</td></tr>
 <tr><td class="nw">2. 기획 배경</td><td>2부 2번 (운전자가 겪는 불편한 순간, 점유율 수치와 기준)</td></tr>
-<tr><td class="nw">3. 주요 기능·차량 특화</td><td>2부 3번 (여덟 기능의 동작 조건, 주의 분산 설계) · 3부 (판별 로직과 수치) · 4부 (기능별 개선 기록, 기존 서비스 비교)</td></tr>
+<tr><td class="nw">3. 주요 기능·차량 특화</td><td>2부 3번 (여덟 기능의 동작 조건, 주의 분산 설계) · 3부 (판별 로직과 수치) · 4부 (맨 앞에 기존 서비스 비교, 이어서 기능별 개선 기록)</td></tr>
 <tr><td class="nw">4. 사용 시나리오</td><td>2부 4번 (장면별 화면 문구)</td></tr>
 <tr><td class="nw">5. 개발 계획</td><td>2부 5번 (SDK별 사용 내용, 가이드 준수 항목) · 5부 (지연시간 실측)</td></tr>
-<tr><td class="nw">6. 기대효과·발전 가능성</td><td>2부 6번 (수익 모델, Tier별 형태와 기능, 인지하고 있는 과제) · 6부 (MAU·Retention Rate 산정) · 1부 (지향점, Tier별 기능과 진입 조건, 구현하지 못한 것과 그 이유)</td></tr>
+<tr><td class="nw">6. 기대효과·발전 가능성</td><td>1부 (지향점, Tier별 형태·기능과 진입 조건, 구현하지 못한 것과 그 이유) · 2부 6번 (타깃 고객, 수익 모델, 인지하고 있는 과제) · 6부 (MAU·Retention Rate 산정)</td></tr>
 </tbody></table>"""
 
 
