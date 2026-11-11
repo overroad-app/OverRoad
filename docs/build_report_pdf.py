@@ -15,8 +15,8 @@ from pathlib import Path
 
 DOCS = Path(__file__).resolve().parent
 OUT_HTML = DOCS / "_report.html"
-# PAIRED=1: 요약형 접수양식(content_diet.py)과 짝을 이루는 상세판. 2부가 "기획서 상세판"이 되고, 양식 문항 ↔ 보고서 부 안내를 넣는다
-PAIRED = os.environ.get("PAIRED") == "1"
+# 상세판: 요약형 접수양식(content_diet.py, 제출본)과 짝을 이룬다. 2부가 "기획서 상세판"이 되고, 양식 문항 ↔ 보고서 부 안내를 넣는다
+PAIRED = os.environ.get("PAIRED", "1") == "1"   # 기본값: 상세판 (제출본). PAIRED=0이면 옛 구성
 OUT_PDF = DOCS / ("OverRoad_통합보고서_상세판.pdf" if PAIRED else "OverRoad_통합보고서.pdf")
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
@@ -115,7 +115,7 @@ def proposal_html():
     """기획서 원고(docs/proposal/content.py)를 접수양식 항목 제목과 함께 HTML로."""
     ns = {}
     exec((DOCS / "proposal" / "content.py").read_text(encoding="utf-8"), ns)
-    titles = ["1. 앱 한 줄 소개", "2. 기획 배경", "3. 앱 주요 기능 및 차량 특화 요소", "4. 주요 사용 시나리오",
+    titles = ["1. 앱 소개" if PAIRED else "1. 앱 한 줄 소개", "2. 기획 배경", "3. 앱 주요 기능 및 차량 특화 요소", "4. 주요 사용 시나리오",
               "5. 개발 계획", "6. 기대효과 및 발전 가능성"]
     out = []
     for title, lines in zip(titles, ns["SECTIONS"]):

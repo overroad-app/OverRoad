@@ -39,7 +39,7 @@ docs/      통합보고서(PDF), 지향점·Tier별 기능, 기술 리포트(판
 apk/       release APK
 ```
 
-자세한 설명은 [`docs/OverRoad_통합보고서.pdf`](docs/OverRoad_통합보고서.pdf)에 있습니다. 판별 로직은 [`docs/technical_report.md`](docs/technical_report.md), Tier별 로드맵은 [`docs/philosophy.md`](docs/philosophy.md)를 보세요.
+자세한 설명은 [`docs/OverRoad_통합보고서_상세판.pdf`](docs/OverRoad_통합보고서_상세판.pdf)에 있습니다. 판별 로직은 [`docs/technical_report.md`](docs/technical_report.md), Tier별 로드맵은 [`docs/philosophy.md`](docs/philosophy.md)를 보세요.
 
 ## APK
 
