@@ -43,7 +43,7 @@ apk/       release APK
 
 ## APK
 
-- 위치: [`apk/OverRoad_release.apk`](apk/OverRoad_release.apk) (release 빌드, 서명됨)
+- 위치: [`apk/OverRoad_OverRoad_release.apk`](apk/OverRoad_OverRoad_release.apk) (release 빌드, 서명됨)
 - 패키지: `com.hyperconnect.app` · 버전 0.1.0 · minSdk 28 · targetSdk 34
 
 ## 테스트 환경 및 필요한 설정
@@ -67,7 +67,7 @@ apk/       release APK
 python3 -I server/server.py
 
 # 2) 에뮬레이터를 켠 뒤 앱 설치 (release APK 또는 직접 빌드)
-adb install -r apk/OverRoad_release.apk
+adb install -r apk/OverRoad_OverRoad_release.apk
 # 직접 빌드할 때는 Android Studio의 JDK를 쓴다
 JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:assembleDebug
 
@@ -101,7 +101,7 @@ bash scripts/hard_brake.sh                                       # B 급제동
 | adb 위치 | `~/Library/Android/sdk/platform-tools/adb` |
 | 에뮬레이터 | 2대, 시리얼 `emulator-5554`(B) · `emulator-5556`(C). 각각 `-port 5554`, `-port 5556`으로 켭니다 |
 | Virtual Console | `adb -s emulator-5554 forward tcp:8088 tcp:8088`, `adb -s emulator-5556 forward tcp:8089 tcp:8088` (차량 속도·기어·방향지시등 조작용) |
-| 앱 | `launch_bc.sh`가 설치합니다. 직접 빌드한 디버그 APK가 있으면 그것을, 없으면 `apk/OverRoad_release.apk`를 씁니다. 서명이 다른 앱이 이미 있으면 먼저 지워야 합니다 |
+| 앱 | `launch_bc.sh`가 설치합니다. 직접 빌드한 디버그 APK가 있으면 그것을, 없으면 `apk/OverRoad_OverRoad_release.apk`를 씁니다. 서명이 다른 앱이 이미 있으면 먼저 지워야 합니다 |
 | 기준 위치 | 에뮬레이터 내비의 기본 위치(위도 37.4127 부근)를 기준으로 가상 차량을 놓습니다 |
 
 시나리오 사이에는 `bash scripts/scenarios/stop_fleet.sh`로 가상 차량을 정리합니다.

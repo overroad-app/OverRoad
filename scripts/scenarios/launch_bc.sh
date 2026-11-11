@@ -4,7 +4,7 @@ HC=$(cd "$(dirname "$0")/../.." && pwd)  # 저장소 루트
 ADB=~/Library/Android/sdk/platform-tools/adb
 # 직접 빌드한 디버그 APK가 있으면 그것을, 없으면 저장소의 release APK를 설치한다
 APK=$HC/app/build/outputs/apk/debug/app-debug.apk
-[ -f "$APK" ] || APK=$HC/apk/OverRoad_release.apk
+[ -f "$APK" ] || APK=$HC/apk/OverRoad_OverRoad_release.apk
 for p in 8088 8089; do python3 -I $HC/scripts/vc.py --port $p park >/dev/null; done
 # 이전 시연의 이벤트·전송 기록을 비운다 (같은 지점을 다시 시연해도 경고가 막히지 않게)
 curl -s -X POST localhost:8080/demo -H 'Content-Type: application/json' -d '{"reset": true}' >/dev/null
