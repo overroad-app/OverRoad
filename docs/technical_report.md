@@ -564,4 +564,4 @@ zone: id, hazard(heavy_rain|fog|slippery), label, status(active|ended), lat, lon
 | EV 충전 | `scenario_ev.sh` | 순번·완료 시각, 충전 기록 → 실측 출력, 별점 반영 |
 | 지연시간 | `measure_latency.py` | 10회 평균 0.64초 |
 
-각 시나리오는 에뮬레이터 2대(B, C) + 가상 차량 시뮬레이터(`scripts/fleet.py`) + Virtual Console 조작(`scripts/vc.py`)으로 재현하며.
+각 시나리오는 에뮬레이터 2대(B, C) + 가상 차량 시뮬레이터(`scripts/fleet.py`) + Virtual Console 조작(`scripts/vc.py`)으로 재현한다.
