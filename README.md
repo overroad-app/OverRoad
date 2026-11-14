@@ -50,7 +50,7 @@ apk/       release APK
 
 | 항목 | 내용 |
 |---|---|
-| 에뮬레이터 | Pleos Connect Emulator v2.1.0 (Android 14, API 34), 시연은 2대(B·C) 동시 실행 |
+| 에뮬레이터 | Pleos Connect Emulator v2.1.0 (Android 14, API 34), 화면 규격 2560×1440 · 160dpi(가로형), 시연은 2대(B·C) 동시 실행 |
 | 개발 도구 | Android Studio (내장 JDK 사용), Gradle Wrapper 포함, Kotlin |
 | Pleos SDK | Vehicle 2.3.2 · NaviHelper 3.0.5 · TextToSpeech 3.3.1 |
 | 서버 | Python 3 (추가 패키지 없음), 호스트 PC의 8080 포트 |
@@ -68,7 +68,7 @@ python3 -I server/server.py
 
 # 2) 에뮬레이터를 켠 뒤 앱 설치 (release APK 또는 직접 빌드)
 adb install -r apk/OverRoad_OverRoad_release.apk
-# 직접 빌드할 때는 Android Studio의 JDK를 쓴다
+# 직접 빌드할 때는 Android Studio의 JDK를 쓴다 (Android Studio로 열거나 ANDROID_HOME에 Android SDK 경로를 지정)
 JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:assembleDebug
 
 # 3) 차량 속도 권한과 알림 권한
